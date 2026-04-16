@@ -550,13 +550,6 @@ export async function getUserDevices(userId: number): Promise<DeviceSession[]> {
 
 // ===== v2: Email/Password Auth Helpers =====
 
-export async function getUserById(id: number): Promise<User | null> {
-  const db = await getDb();
-  if (!db) return null;
-  const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
-  return (rows[0] as User) ?? null;
-}
-
 export async function getUserByEmail(email: string): Promise<User | null> {
   const db = await getDb();
   if (!db) return null;
