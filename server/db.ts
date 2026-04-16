@@ -546,3 +546,67 @@ export async function getUserDevices(userId: number): Promise<DeviceSession[]> {
     .where(eq(deviceSessions.userId, userId))
     .orderBy(desc(deviceSessions.lastSyncedAt));
 }
+
+
+// ===== v2: Email/Password Auth Helpers =====
+
+export async function getUserById(id: number): Promise<User | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db.select().from(users).where(eq(users.id, id)).limit(1);
+  return (rows[0] as User) ?? null;
+}
+
+export async function getUserByEmail(email: string): Promise<User | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const normalized = email.trim().toLowerCase();
+  const rows = await db.select().from(users).where(eq(users.email, normalized)).limit(1);
+  return (rows[0] as User) ?? null;
+}
+
+export async function createEmailUser(params: {
+  email: string;
+  name: string | null;
+  passwordHash: string;
+}): Promise<User> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  const normalized = params.email.trim().toLowerCase();
+  const result = await db.insert(users).values({
+    email: normalized,
+    name: params.name,
+    authProvider: "email",
+    passwordHash: params.passwordHash,
+    emailVerified: false,
+    role: "user",
+    isPro: false,
+  });
+  const insertId = (result as any)?.[0]?.insertId ?? (result as any)?.insertId;
+  if (!insertId || typeof insertId !== "number") {
+    throw new Error("Failed to obtain insertId after createEmailUser");
+  }
+  const created = await getUserById(insertId);
+  if (!created) throw new Error("User created but could not be read back");
+  return created;
+}
+
+export async function touchLastSignedIn(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, userId));
+}
+
+// ===== v2: AI Daily Usage Helper =====
+
+export async function getAiUsageToday(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const now = new Date();
+  const utcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+  const rows = await db
+    .select()
+    .from(aiUsageLog)
+    .where(and(eq(aiUsageLog.userId, userId), gte(aiUsageLog.createdAt, utcMidnight)));
+  return rows.length;
+}
