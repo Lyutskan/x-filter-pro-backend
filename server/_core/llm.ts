@@ -1,28 +1,31 @@
+/**
+ * LLM Helper — Google Gemini
+ *
+ * Manus forge yerine Gemini API kullanılır.
+ *
+ * Free tier (gemini-2.5-flash-lite, Nisan 2026):
+ *   - 15 istek/dakika
+ *   - 1000 istek/gün
+ *   - 250k token/dakika
+ *   - 1M context window
+ *   - ÜCRETSİZ (kredi kartı yok)
+ *
+ * UYARI: Free tier'da Google, prompt'larınızı modeli eğitmek için kullanabilir.
+ * Privacy policy'nizde bunu belirtmeniz gerekir.
+ *
+ * Mevcut kod (xfilter.router.ts) `invokeLLM(params)` çağırıyor ve
+ * `result.choices[0].message.content` okuyor — bu kontratı koruyoruz.
+ */
+
 import { ENV } from "./env";
+
+// ===== Tipler — eski Manus tipleriyle uyumlu (xfilter.router.ts değişmesin) =====
 
 export type Role = "system" | "user" | "assistant" | "tool" | "function";
 
-export type TextContent = {
-  type: "text";
-  text: string;
-};
-
-export type ImageContent = {
-  type: "image_url";
-  image_url: {
-    url: string;
-    detail?: "auto" | "low" | "high";
-  };
-};
-
-export type FileContent = {
-  type: "file_url";
-  file_url: {
-    url: string;
-    mime_type?: "audio/mpeg" | "audio/wav" | "application/pdf" | "audio/mp4" | "video/mp4" ;
-  };
-};
-
+export type TextContent = { type: "text"; text: string };
+export type ImageContent = { type: "image_url"; image_url: { url: string; detail?: "auto" | "low" | "high" } };
+export type FileContent = { type: "file_url"; file_url: { url: string; mime_type?: string } };
 export type MessageContent = string | TextContent | ImageContent | FileContent;
 
 export type Message = {
@@ -34,26 +37,18 @@ export type Message = {
 
 export type Tool = {
   type: "function";
-  function: {
-    name: string;
-    description?: string;
-    parameters?: Record<string, unknown>;
-  };
-};
-
-export type ToolChoicePrimitive = "none" | "auto" | "required";
-export type ToolChoiceByName = { name: string };
-export type ToolChoiceExplicit = {
-  type: "function";
-  function: {
-    name: string;
-  };
+  function: { name: string; description?: string; parameters?: Record<string, unknown> };
 };
 
 export type ToolChoice =
-  | ToolChoicePrimitive
-  | ToolChoiceByName
-  | ToolChoiceExplicit;
+  | "none"
+  | "auto"
+  | "required"
+  | { name: string }
+  | { type: "function"; function: { name: string } };
+
+export type OutputSchema = { name: string; schema: Record<string, unknown>; strict?: boolean };
+export type ResponseFormat = { type: "json_schema"; json_schema?: { schema?: Record<string, unknown> } } | { type: "text" } | { type: "json_object" };
 
 export type InvokeParams = {
   messages: Message[];
@@ -71,25 +66,25 @@ export type InvokeParams = {
 export type ToolCall = {
   id: string;
   type: "function";
-  function: {
-    name: string;
-    arguments: string;
+  function: { name: string; arguments: string };
+};
+
+export type ChatChoice = {
+  index: number;
+  message: {
+    role: "assistant";
+    content: string | null;
+    tool_calls?: ToolCall[];
   };
+  finish_reason: string;
 };
 
 export type InvokeResult = {
   id: string;
+  object: string;
   created: number;
   model: string;
-  choices: Array<{
-    index: number;
-    message: {
-      role: Role;
-      content: string | Array<TextContent | ImageContent | FileContent>;
-      tool_calls?: ToolCall[];
-    };
-    finish_reason: string | null;
-  }>;
+  choices: ChatChoice[];
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
@@ -97,236 +92,140 @@ export type InvokeResult = {
   };
 };
 
-export type JsonSchema = {
-  name: string;
-  schema: Record<string, unknown>;
-  strict?: boolean;
-};
+// ===== Gemini API çağrısı =====
 
-export type OutputSchema = JsonSchema;
+/**
+ * Mesajları Gemini formatına çevir.
+ * - "system" rolü Gemini'de yok; ilk system mesajını systemInstruction'a alıyoruz.
+ * - "assistant" → "model"
+ * - Multipart content (image, vs) şimdilik destekli değil — sade metin.
+ */
+function buildGeminiPayload(params: InvokeParams): {
+  body: Record<string, unknown>;
+  url: string;
+} {
+  const messages = params.messages;
+  let systemInstruction: string | null = null;
+  const contents: Array<{ role: "user" | "model"; parts: Array<{ text: string }> }> = [];
 
-export type ResponseFormat =
-  | { type: "text" }
-  | { type: "json_object" }
-  | { type: "json_schema"; json_schema: JsonSchema };
-
-const ensureArray = (
-  value: MessageContent | MessageContent[]
-): MessageContent[] => (Array.isArray(value) ? value : [value]);
-
-const normalizeContentPart = (
-  part: MessageContent
-): TextContent | ImageContent | FileContent => {
-  if (typeof part === "string") {
-    return { type: "text", text: part };
-  }
-
-  if (part.type === "text") {
-    return part;
-  }
-
-  if (part.type === "image_url") {
-    return part;
-  }
-
-  if (part.type === "file_url") {
-    return part;
-  }
-
-  throw new Error("Unsupported message content part");
-};
-
-const normalizeMessage = (message: Message) => {
-  const { role, name, tool_call_id } = message;
-
-  if (role === "tool" || role === "function") {
-    const content = ensureArray(message.content)
-      .map(part => (typeof part === "string" ? part : JSON.stringify(part)))
-      .join("\n");
-
-    return {
-      role,
-      name,
-      tool_call_id,
-      content,
-    };
-  }
-
-  const contentParts = ensureArray(message.content).map(normalizeContentPart);
-
-  // If there's only text content, collapse to a single string for compatibility
-  if (contentParts.length === 1 && contentParts[0].type === "text") {
-    return {
-      role,
-      name,
-      content: contentParts[0].text,
-    };
-  }
-
-  return {
-    role,
-    name,
-    content: contentParts,
-  };
-};
-
-const normalizeToolChoice = (
-  toolChoice: ToolChoice | undefined,
-  tools: Tool[] | undefined
-): "none" | "auto" | ToolChoiceExplicit | undefined => {
-  if (!toolChoice) return undefined;
-
-  if (toolChoice === "none" || toolChoice === "auto") {
-    return toolChoice;
-  }
-
-  if (toolChoice === "required") {
-    if (!tools || tools.length === 0) {
-      throw new Error(
-        "tool_choice 'required' was provided but no tools were configured"
-      );
+  for (const msg of messages) {
+    const text = extractText(msg.content);
+    if (msg.role === "system") {
+      // Gemini systemInstruction tek bir string — birden fazla varsa birleştir
+      systemInstruction = systemInstruction ? `${systemInstruction}\n\n${text}` : text;
+      continue;
     }
-
-    if (tools.length > 1) {
-      throw new Error(
-        "tool_choice 'required' needs a single tool or specify the tool name explicitly"
-      );
+    if (msg.role === "tool" || msg.role === "function") {
+      // Tool çıktısını user mesajı olarak ekleyelim — basit fallback
+      contents.push({ role: "user", parts: [{ text: `[tool result] ${text}` }] });
+      continue;
     }
-
-    return {
-      type: "function",
-      function: { name: tools[0].function.name },
-    };
+    const geminiRole: "user" | "model" = msg.role === "assistant" ? "model" : "user";
+    contents.push({ role: geminiRole, parts: [{ text }] });
   }
 
-  if ("name" in toolChoice) {
-    return {
-      type: "function",
-      function: { name: toolChoice.name },
-    };
-  }
-
-  return toolChoice;
-};
-
-const resolveApiUrl = () =>
-  ENV.forgeApiUrl && ENV.forgeApiUrl.trim().length > 0
-    ? `${ENV.forgeApiUrl.replace(/\/$/, "")}/v1/chat/completions`
-    : "https://forge.manus.im/v1/chat/completions";
-
-const assertApiKey = () => {
-  if (!ENV.forgeApiKey) {
-    throw new Error("OPENAI_API_KEY is not configured");
-  }
-};
-
-const normalizeResponseFormat = ({
-  responseFormat,
-  response_format,
-  outputSchema,
-  output_schema,
-}: {
-  responseFormat?: ResponseFormat;
-  response_format?: ResponseFormat;
-  outputSchema?: OutputSchema;
-  output_schema?: OutputSchema;
-}):
-  | { type: "json_schema"; json_schema: JsonSchema }
-  | { type: "text" }
-  | { type: "json_object" }
-  | undefined => {
-  const explicitFormat = responseFormat || response_format;
-  if (explicitFormat) {
-    if (
-      explicitFormat.type === "json_schema" &&
-      !explicitFormat.json_schema?.schema
-    ) {
-      throw new Error(
-        "responseFormat json_schema requires a defined schema object"
-      );
-    }
-    return explicitFormat;
-  }
-
-  const schema = outputSchema || output_schema;
-  if (!schema) return undefined;
-
-  if (!schema.name || !schema.schema) {
-    throw new Error("outputSchema requires both name and schema");
-  }
-
-  return {
-    type: "json_schema",
-    json_schema: {
-      name: schema.name,
-      schema: schema.schema,
-      ...(typeof schema.strict === "boolean" ? { strict: schema.strict } : {}),
+  const body: Record<string, unknown> = {
+    contents,
+    generationConfig: {
+      maxOutputTokens: params.maxTokens || params.max_tokens || 1024,
+      temperature: 0.7,
     },
   };
-};
 
+  if (systemInstruction) {
+    body.systemInstruction = { parts: [{ text: systemInstruction }] };
+  }
+
+  // JSON output isteniyorsa
+  const respFormat = params.responseFormat || params.response_format;
+  if (respFormat?.type === "json_object" || respFormat?.type === "json_schema") {
+    (body.generationConfig as Record<string, unknown>).responseMimeType = "application/json";
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+    ENV.geminiModel
+  )}:generateContent?key=${encodeURIComponent(ENV.geminiApiKey)}`;
+
+  return { body, url };
+}
+
+function extractText(content: MessageContent | MessageContent[]): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map(extractText).join("\n");
+  }
+  if (content.type === "text") return content.text;
+  if (content.type === "image_url") return `[image: ${content.image_url.url}]`;
+  if (content.type === "file_url") return `[file: ${content.file_url.url}]`;
+  return "";
+}
+
+/**
+ * Gemini cevabını OpenAI formatına çevir (xfilter.router.ts bu formatı bekliyor).
+ */
+function geminiToOpenAIFormat(geminiResp: any): InvokeResult {
+  const candidate = geminiResp?.candidates?.[0];
+  const text =
+    candidate?.content?.parts?.map((p: any) => p?.text || "").join("") || "";
+
+  return {
+    id: geminiResp?.responseId || `gemini-${Date.now()}`,
+    object: "chat.completion",
+    created: Math.floor(Date.now() / 1000),
+    model: geminiResp?.modelVersion || ENV.geminiModel,
+    choices: [
+      {
+        index: 0,
+        message: {
+          role: "assistant",
+          content: text,
+        },
+        finish_reason: candidate?.finishReason?.toLowerCase() || "stop",
+      },
+    ],
+    usage: geminiResp?.usageMetadata
+      ? {
+          prompt_tokens: geminiResp.usageMetadata.promptTokenCount || 0,
+          completion_tokens: geminiResp.usageMetadata.candidatesTokenCount || 0,
+          total_tokens: geminiResp.usageMetadata.totalTokenCount || 0,
+        }
+      : undefined,
+  };
+}
+
+/**
+ * Ana giriş noktası. xfilter.router.ts bu fonksiyonu çağırır.
+ */
 export async function invokeLLM(params: InvokeParams): Promise<InvokeResult> {
-  assertApiKey();
-
-  const {
-    messages,
-    tools,
-    toolChoice,
-    tool_choice,
-    outputSchema,
-    output_schema,
-    responseFormat,
-    response_format,
-  } = params;
-
-  const payload: Record<string, unknown> = {
-    model: "gemini-2.5-flash",
-    messages: messages.map(normalizeMessage),
-  };
-
-  if (tools && tools.length > 0) {
-    payload.tools = tools;
-  }
-
-  const normalizedToolChoice = normalizeToolChoice(
-    toolChoice || tool_choice,
-    tools
-  );
-  if (normalizedToolChoice) {
-    payload.tool_choice = normalizedToolChoice;
-  }
-
-  payload.max_tokens = 32768
-  payload.thinking = {
-    "budget_tokens": 128
-  }
-
-  const normalizedResponseFormat = normalizeResponseFormat({
-    responseFormat,
-    response_format,
-    outputSchema,
-    output_schema,
-  });
-
-  if (normalizedResponseFormat) {
-    payload.response_format = normalizedResponseFormat;
-  }
-
-  const response = await fetch(resolveApiUrl(), {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${ENV.forgeApiKey}`,
-    },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
+  if (!ENV.geminiApiKey) {
     throw new Error(
-      `LLM invoke failed: ${response.status} ${response.statusText} – ${errorText}`
+      "GEMINI_API_KEY is not configured. Get one from https://aistudio.google.com/app/apikey"
     );
   }
 
-  return (await response.json()) as InvokeResult;
+  const { body, url } = buildGeminiPayload(params);
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    throw new Error(
+      `Gemini API network error: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "<no body>");
+    // 429 = rate limited, 403 = quota exhausted veya invalid key
+    throw new Error(
+      `Gemini API error ${response.status}: ${response.statusText} – ${errorText}`
+    );
+  }
+
+  const json = await response.json();
+  return geminiToOpenAIFormat(json);
 }
