@@ -105,26 +105,26 @@ async function startServer() {
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
   typescript  // One-time migration endpoint — run once, then remove
+ // One-time migration - run once then remove
   app.get("/migrate", async (_req, res) => {
     try {
-      const mysql = await import("mysql2/promise");
-      const conn = await mysql.createConnection(process.env.DATABASE_URL || "");
+      const { drizzle } = await import("drizzle-orm/mysql2");
+      const { sql } = await import("drizzle-orm");
+      const db = drizzle(process.env.DATABASE_URL || "");
       const queries = [
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS authProvider ENUM('email','google','manus') NOT NULL DEFAULT 'email'",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS passwordHash VARCHAR(512) NULL",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS emailVerified BOOLEAN NOT NULL DEFAULT false",
-        "ALTER TABLE users MODIFY COLUMN email VARCHAR(320) NOT NULL",
-        "ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL",
+        sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authProvider ENUM('email','google','manus') NOT NULL DEFAULT 'email'`,
+        sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS passwordHash VARCHAR(512) NULL`,
+        sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS emailVerified BOOLEAN NOT NULL DEFAULT false`,
+        sql`ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL`,
       ];
       const results = [];
       for (const q of queries) {
-        try { await conn.execute(q); results.push("OK: " + q.slice(0, 60)); }
-        catch (e: any) { results.push("SKIP: " + e.message.slice(0, 80)); }
+        try { await db.execute(q); results.push("OK"); }
+        catch (err) { results.push("SKIP: " + String(err).slice(0, 80)); }
       }
-      await conn.end();
       res.json({ success: true, results });
-    } catch (e: any) {
-      res.status(500).json({ error: e.message });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
     }
   });
 
