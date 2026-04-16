@@ -21,6 +21,7 @@ import {
   cleanExpiredMutes,
   logAiUsage,
   getAiUsageThisMonth,
+  getAiUsageToday,
   registerDevice,
   getUserDevices,
 } from "./db";
@@ -44,9 +45,10 @@ async function checkMonthlyLimit(userId: number): Promise<boolean> {
 
 async function checkAiLimit(userId: number): Promise<boolean> {
   const sub = await getOrCreateSubscription(userId);
-  if (sub.isPro) return true;
-  const usage = await getAiUsageThisMonth(userId);
-  return usage < (sub.aiMonthlyLimit || 10);
+  // FAZA 2: Günlük limit (Pro: 50, Free: 5)
+  const dailyUsage = await getAiUsageToday(userId);
+  const limit = sub.isPro ? 50 : 5;
+  return dailyUsage < limit;
 }
 
 export const xfilterRouter = router({
@@ -57,7 +59,9 @@ export const xfilterRouter = router({
       isPro: sub.isPro,
       monthlyLimit: sub.monthlyLimit,
       aiMonthlyLimit: sub.aiMonthlyLimit,
+      aiUsageToday: await getAiUsageToday(ctx.user.id),
       aiUsageThisMonth: await getAiUsageThisMonth(ctx.user.id),
+      aiDailyLimit: sub.isPro ? 50 : 5,
     };
   }),
 
@@ -232,7 +236,7 @@ export const xfilterRouter = router({
       if (!canUseAi) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "Aylık AI kullanım limitine ulaştınız. Pro'ya yükseltin.",
+          message: "Günlük AI kullanım limitine ulaştınız. Pro'ya yükseltin.",
         });
       }
 
@@ -299,7 +303,7 @@ export const xfilterRouter = router({
       if (!canUseAi) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "Aylık AI kullanım limitine ulaştınız. Pro'ya yükseltin.",
+          message: "Günlük AI kullanım limitine ulaştınız. Pro'ya yükseltin.",
         });
       }
 
