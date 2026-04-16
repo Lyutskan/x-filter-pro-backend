@@ -104,6 +104,30 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  typescript  // One-time migration endpoint — run once, then remove
+  app.get("/migrate", async (_req, res) => {
+    try {
+      const mysql = await import("mysql2/promise");
+      const conn = await mysql.createConnection(process.env.DATABASE_URL || "");
+      const queries = [
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS authProvider ENUM('email','google','manus') NOT NULL DEFAULT 'email'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS passwordHash VARCHAR(512) NULL",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS emailVerified BOOLEAN NOT NULL DEFAULT false",
+        "ALTER TABLE users MODIFY COLUMN email VARCHAR(320) NOT NULL",
+        "ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL",
+      ];
+      const results = [];
+      for (const q of queries) {
+        try { await conn.execute(q); results.push("OK: " + q.slice(0, 60)); }
+        catch (e: any) { results.push("SKIP: " + e.message.slice(0, 80)); }
+      }
+      await conn.end();
+      res.json({ success: true, results });
+    } catch (e: any) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+
   // Sağlık kontrol
   app.get("/health", (_req, res) => {
     res.json({
