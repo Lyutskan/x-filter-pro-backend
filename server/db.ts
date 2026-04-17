@@ -611,18 +611,18 @@ setTimeout(async () => {
     const db = await getDb();
     if (!db) return;
     const queries = [
-      sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS authProvider ENUM('email','google') NOT NULL DEFAULT 'email'`,
-      sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS passwordHash VARCHAR(512) NULL`,
-      sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS emailVerified BOOLEAN NOT NULL DEFAULT false`,
+      sql`ALTER TABLE users ADD COLUMN authProvider ENUM('email','google') NOT NULL DEFAULT 'email'`,
+      sql`ALTER TABLE users ADD COLUMN passwordHash VARCHAR(512) NULL`,
+      sql`ALTER TABLE users ADD COLUMN emailVerified BOOLEAN NOT NULL DEFAULT false`,
+      sql`ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL`,
     ];
     for (const q of queries) {
       try { await db.execute(q); console.log("[Migration] OK"); }
-      catch (e) { console.log("[Migration] skip"); }
+      catch (e: any) {
+        if (e?.message?.includes("Duplicate")) console.log("[Migration] already exists, OK");
+        else console.log("[Migration] error:", e?.message?.slice(0, 120));
+      }
     }
-    try {
-      await db.execute(sql`ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL`);
-      console.log("[Migration] openId OK");
-    } catch (e) { console.log("[Migration] openId skip"); }
     console.log("[Migration] Done!");
-  } catch (e) { console.log("[Migration] skipped"); }
+  } catch (e: any) { console.log("[Migration] failed:", e?.message?.slice(0, 120)); }
 }, 3000);
