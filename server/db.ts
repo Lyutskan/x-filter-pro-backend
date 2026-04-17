@@ -605,4 +605,26 @@ export async function getAiUsageToday(userId: number): Promise<number> {
   return rows.length;
 }
 
-
+// Auto-migration: add auth columns (using query, not execute)
+setTimeout(async () => {
+  try {
+    const db = await getDb();
+    if (!db) return;
+    const pool = (db as any).$client;
+    if (!pool?.query) { console.log("[Migration] no pool"); return; }
+    const queries = [
+      "ALTER TABLE users ADD COLUMN authProvider ENUM('email','google') NOT NULL DEFAULT 'email'",
+      "ALTER TABLE users ADD COLUMN passwordHash VARCHAR(512) NULL",
+      "ALTER TABLE users ADD COLUMN emailVerified BOOLEAN NOT NULL DEFAULT false",
+      "ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL",
+    ];
+    for (const q of queries) {
+      try { await pool.query(q); console.log("[Migration] OK:", q.slice(24, 65)); }
+      catch (e: any) {
+        if (e?.code === "ER_DUP_FIELDNAME") console.log("[Migration] exists, OK");
+        else console.log("[Migration] err:", e?.code, e?.sqlMessage);
+      }
+    }
+    console.log("[Migration] All done!");
+  } catch (e: any) { console.log("[Migration] failed:", e?.message?.slice(0, 120)); }
+}, 5000);
