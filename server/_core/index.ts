@@ -7,7 +7,6 @@
  *  - Sağlık kontrol endpoint'i /health eklendi
  */
 
-import mysql from "mysql2/promise";
 import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
@@ -104,29 +103,6 @@ async function startServer() {
   // Body parser — dosya uploadları için 50mb
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
-  typescript  // One-time migration endpoint — run once, then remove
- // One-time migration - run once then remove
- app.get("/migrate", async (_req, res) => {
-    try {
-      const conn = await mysql.createConnection(process.env.DATABASE_URL || "");
-      const queries = [
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS authProvider ENUM('email','google','manus') NOT NULL DEFAULT 'email'",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS passwordHash VARCHAR(512) NULL",
-        "ALTER TABLE users ADD COLUMN IF NOT EXISTS emailVerified BOOLEAN NOT NULL DEFAULT false",
-        "ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL",
-      ];
-      const results = [];
-      for (const q of queries) {
-        try { await conn.execute(q); results.push("OK"); }
-        catch (e) { results.push("SKIP: " + String(e).slice(0, 100)); }
-      }
-      await conn.end();
-      res.json({ success: true, results });
-    } catch (e) {
-      res.status(500).json({ error: String(e) });
-    }
-  });
 
   // Sağlık kontrol
   app.get("/health", (_req, res) => {
