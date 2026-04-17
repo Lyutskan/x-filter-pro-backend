@@ -605,12 +605,14 @@ export async function getAiUsageToday(userId: number): Promise<number> {
   return rows.length;
 }
 
-// Auto-migration: add new columns if missing
-// Auto-migration: add new columns using raw mysql2
+
+// Auto-migration: use drizzle's own connection pool
 setTimeout(async () => {
   try {
-    const mysql2 = await import("mysql2/promise");
-    const conn = await mysql2.createConnection(process.env.DATABASE_URL || "");
+    const db = await getDb();
+    if (!db) return;
+    const pool = (db as any).$client;
+    if (!pool?.execute) { console.log("[Migration] no pool"); return; }
     const queries = [
       "ALTER TABLE users ADD COLUMN authProvider ENUM('email','google') NOT NULL DEFAULT 'email'",
       "ALTER TABLE users ADD COLUMN passwordHash VARCHAR(512) NULL",
@@ -618,13 +620,12 @@ setTimeout(async () => {
       "ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL",
     ];
     for (const q of queries) {
-      try { await conn.execute(q); console.log("[Migration] OK:", q.slice(0, 50)); }
+      try { await pool.execute(q); console.log("[Migration] OK:", q.slice(24, 60)); }
       catch (e: any) {
-        if (e?.code === "ER_DUP_FIELDNAME") console.log("[Migration] already exists, OK");
-        else console.log("[Migration] error:", e?.code, e?.sqlMessage || e?.message);
+        if (e?.code === "ER_DUP_FIELDNAME") console.log("[Migration] exists, OK");
+        else console.log("[Migration] err:", e?.code, e?.sqlMessage);
       }
     }
-    await conn.end();
     console.log("[Migration] All done!");
-  } catch (e: any) { console.log("[Migration] connect failed:", e?.code, e?.message?.slice(0, 120)); }
+  } catch (e: any) { console.log("[Migration] failed:", e?.message?.slice(0, 120)); }
 }, 5000);
