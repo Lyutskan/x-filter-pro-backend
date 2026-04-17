@@ -606,23 +606,25 @@ export async function getAiUsageToday(userId: number): Promise<number> {
 }
 
 // Auto-migration: add new columns if missing
+// Auto-migration: add new columns using raw mysql2
 setTimeout(async () => {
   try {
-    const db = await getDb();
-    if (!db) return;
+    const mysql2 = await import("mysql2/promise");
+    const conn = await mysql2.createConnection(process.env.DATABASE_URL || "");
     const queries = [
-      sql`ALTER TABLE users ADD COLUMN authProvider ENUM('email','google') NOT NULL DEFAULT 'email'`,
-      sql`ALTER TABLE users ADD COLUMN passwordHash VARCHAR(512) NULL`,
-      sql`ALTER TABLE users ADD COLUMN emailVerified BOOLEAN NOT NULL DEFAULT false`,
-      sql`ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL`,
+      "ALTER TABLE users ADD COLUMN authProvider ENUM('email','google') NOT NULL DEFAULT 'email'",
+      "ALTER TABLE users ADD COLUMN passwordHash VARCHAR(512) NULL",
+      "ALTER TABLE users ADD COLUMN emailVerified BOOLEAN NOT NULL DEFAULT false",
+      "ALTER TABLE users MODIFY COLUMN openId VARCHAR(64) NULL",
     ];
     for (const q of queries) {
-      try { await db.execute(q); console.log("[Migration] OK"); }
+      try { await conn.execute(q); console.log("[Migration] OK:", q.slice(0, 50)); }
       catch (e: any) {
-        if (e?.message?.includes("Duplicate")) console.log("[Migration] already exists, OK");
-        else console.log("[Migration] error:", e?.message?.slice(0, 120));
+        if (e?.code === "ER_DUP_FIELDNAME") console.log("[Migration] already exists, OK");
+        else console.log("[Migration] error:", e?.code, e?.sqlMessage || e?.message);
       }
     }
-    console.log("[Migration] Done!");
-  } catch (e: any) { console.log("[Migration] failed:", e?.message?.slice(0, 120)); }
-}, 3000);
+    await conn.end();
+    console.log("[Migration] All done!");
+  } catch (e: any) { console.log("[Migration] connect failed:", e?.code, e?.message?.slice(0, 120)); }
+}, 5000);
