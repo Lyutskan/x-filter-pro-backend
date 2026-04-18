@@ -104,7 +104,20 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-  // Sağlık kontrol
+  // Stripe checkout success/cancel landing pages
+  app.get("/checkout-success", (_req, res) => {
+    res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Success</title>
+<style>body{font-family:system-ui;background:#0a0a14;color:#e8e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center}.c{max-width:400px;padding:40px}h1{font-size:48px;margin:0 0 20px}p{color:#66668a;line-height:1.6}.btn{display:inline-block;margin-top:20px;padding:12px 24px;background:#ffd166;color:#000;text-decoration:none;border-radius:8px;font-weight:700}</style>
+</head><body><div class="c"><div style="font-size:64px">⭐</div><h1>Pro Aktif!</h1><p>Ödemen başarıyla alındı. Artık X Filter Pro'nun tüm özelliklerini sınırsız kullanabilirsin.<br><br>Bu sayfayı kapatabilirsin — extension'da Pro rozetin otomatik görünecek.</p><a href="#" onclick="window.close();return false" class="btn">Pencereyi Kapat</a></div></body></html>`);
+  });
+
+  app.get("/checkout-cancel", (_req, res) => {
+    res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Cancelled</title>
+<style>body{font-family:system-ui;background:#0a0a14;color:#e8e8f0;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;text-align:center}.c{max-width:400px;padding:40px}h1{font-size:36px;margin:0 0 20px}p{color:#66668a;line-height:1.6}.btn{display:inline-block;margin-top:20px;padding:12px 24px;background:#1e1e30;color:#e8e8f0;text-decoration:none;border-radius:8px;border:1px solid #2a2a40}</style>
+</head><body><div class="c"><div style="font-size:48px">↩</div><h1>Ödeme İptal Edildi</h1><p>Herhangi bir ücret alınmadı. Pro'ya geçmek istersen extension'dan tekrar deneyebilirsin.</p><a href="#" onclick="window.close();return false" class="btn">Pencereyi Kapat</a></div></body></html>`);
+  });
   app.get("/health", (_req, res) => {
     res.json({
       status: "ok",
