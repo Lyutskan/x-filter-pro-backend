@@ -12,26 +12,27 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || "");
 /**
  * Checkout session oluştur
  */
+/**
+ * Checkout session oluştur — price ID kullanarak
+ */
 export async function createCheckoutSession(config: CheckoutSessionConfig): Promise<string> {
-  const product = getProductByPlan(config.planType);
+  // Stripe'tan price ID'leri environment'tan oku
+  const priceId = config.planType === "monthly"
+    ? process.env.STRIPE_PRICE_MONTHLY
+    : process.env.STRIPE_PRICE_YEARLY;
 
-  // Stripe session oluştur
+  if (!priceId) {
+    throw new Error(
+      `Stripe price ID not configured. Set STRIPE_PRICE_${config.planType === "monthly" ? "MONTHLY" : "YEARLY"} environment variable.`
+    );
+  }
+
+  // Stripe session oluştur — önceden tanımlı price kullanır (dinamik price_data yerine)
   const session = await stripe.checkout.sessions.create({
     payment_method_types: ["card"],
     line_items: [
       {
-        price_data: {
-          currency: product.currency,
-          product_data: {
-            name: product.name,
-            description: product.description,
-          },
-          unit_amount: product.priceInCents,
-          recurring: {
-            interval: config.planType === "monthly" ? "month" : "year",
-            interval_count: 1,
-          },
-        },
+        price: priceId,
         quantity: 1,
       },
     ],
@@ -54,6 +55,10 @@ export async function createCheckoutSession(config: CheckoutSessionConfig): Prom
       },
     },
   });
+
+  if (!session.url) {
+    throw new Error("Failed to create checkout session");
+  }
 
   if (!session.url) {
     throw new Error("Failed to create checkout session");
