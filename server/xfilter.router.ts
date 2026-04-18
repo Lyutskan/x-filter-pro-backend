@@ -516,7 +516,7 @@ export function formatTimeDisplay(seconds: number): string {
 // Payment helper
 export async function getCheckoutUrl(
   userId: number,
-  planType: "monthly" | "annual",
+  planType: "monthly" | "yearly",
   origin: string
 ): Promise<string> {
   return createCheckoutSession({
