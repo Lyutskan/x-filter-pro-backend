@@ -8,7 +8,7 @@ export const STRIPE_PRODUCTS = {
   PRO_MONTHLY: {
     name: "X Filter Pro - Monthly",
     description: "Unlimited tweet filtering, AI features, and cross-device sync",
-    priceInCents: 999, // $9.99/month
+    priceInCents: 200, // $2.00/month
     interval: "month" as const,
     currency: "usd",
     features: [
@@ -23,7 +23,7 @@ export const STRIPE_PRODUCTS = {
   PRO_ANNUAL: {
     name: "X Filter Pro - Annual",
     description: "Unlimited tweet filtering, AI features, and cross-device sync (yearly)",
-    priceInCents: 8999, // $89.99/year (20% discount)
+    priceInCents: 2000, // $20.00/year (20% discount)
     interval: "year" as const,
     currency: "usd",
     features: [
