@@ -423,7 +423,7 @@ export const xfilterRouter = router({
   createCheckoutSession: protectedProcedure
     .input(
       z.object({
-        planType: z.enum(["monthly", "annual"]),
+        planType: z.enum(["monthly", "yearly"]),
       })
     )
     .mutation(async ({ ctx, input }) => {
