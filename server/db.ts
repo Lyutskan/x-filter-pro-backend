@@ -1,7 +1,6 @@
 import { eq, and, gt, gte, lte, desc, asc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
-  InsertUser,
   users,
   subscriptions,
   seenTweets,
@@ -18,7 +17,6 @@ import {
   type AiUsageLog,
   type DeviceSession,
 } from "../drizzle/schema";
-import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -35,83 +33,9 @@ export async function getDb() {
   return _db;
 }
 
-export async function upsertUser(user: InsertUser): Promise<void> {
-  if (!user.openId) {
-    throw new Error("User openId is required for upsert");
-  }
-
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot upsert user: database not available");
-    return;
-  }
-
-  try {
-    const values: InsertUser = {
-      openId: user.openId,
-    };
-    const updateSet: Record<string, unknown> = {};
-
-    const textFields = ["name", "email", "loginMethod"] as const;
-    type TextField = (typeof textFields)[number];
-
-    const assignNullable = (field: TextField) => {
-      const value = user[field];
-      if (value === undefined) return;
-      const normalized = value ?? null;
-      values[field] = normalized;
-      updateSet[field] = normalized;
-    };
-
-    textFields.forEach(assignNullable);
-
-    if (user.lastSignedIn !== undefined) {
-      values.lastSignedIn = user.lastSignedIn;
-      updateSet.lastSignedIn = user.lastSignedIn;
-    }
-    if (user.role !== undefined) {
-      values.role = user.role;
-      updateSet.role = user.role;
-    } else if (user.openId === ENV.ownerOpenId) {
-      values.role = 'admin';
-      updateSet.role = 'admin';
-    }
-
-    if (!values.lastSignedIn) {
-      values.lastSignedIn = new Date();
-    }
-
-    if (Object.keys(updateSet).length === 0) {
-      updateSet.lastSignedIn = new Date();
-    }
-
-    await db.insert(users).values(values).onDuplicateKeyUpdate({
-      set: updateSet,
-    });
-  } catch (error) {
-    console.error("[Database] Failed to upsert user:", error);
-    throw error;
-  }
-}
-
-export async function getUserByOpenId(openId: string) {
-  const db = await getDb();
-  if (!db) {
-    console.warn("[Database] Cannot get user: database not available");
-    return undefined;
-  }
-
-  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
-
-  if (result.length === 0) return undefined;
-
-  const user = result[0];
-
-  // Ensure subscription exists
-  await getOrCreateSubscription(user.id);
-
-  return user;
-}
+// upsertUser and getUserByOpenId removed in v2.0
+// Reason: replaced Manus OAuth with email/password auth.
+// New equivalent: createUserWithPassword + getUserByEmail (defined below).
 
 export async function getUserById(id: number) {
   const db = await getDb();
@@ -163,7 +87,7 @@ export async function createUserWithPassword(
   if (!db) throw new Error("Database not available");
 
   const normalized = email.trim().toLowerCase();
-  const insertResult = await db.insert(users).values({
+  await db.insert(users).values({
     email: normalized,
     passwordHash,
     name: name ?? null,
@@ -173,18 +97,12 @@ export async function createUserWithPassword(
     isPro: false,
   });
 
-  // Drizzle MySQL: insert returns { insertId, affectedRows }
-  const insertId = (insertResult as unknown as { insertId: number })[0]?.insertId
-    ?? (insertResult as unknown as { insertId: number }).insertId;
-
-  if (!insertId) {
-    // Fallback: re-fetch by email
-    const created = await getUserByEmail(normalized);
-    if (!created) throw new Error("Failed to create user");
-    return { id: created.id, email: created.email, isPro: created.isPro };
+  // Re-fetch by email — works regardless of how Drizzle returns insert metadata.
+  const created = await getUserByEmail(normalized);
+  if (!created) {
+    throw new Error("Failed to fetch newly-created user");
   }
-
-  return { id: insertId, email: normalized, isPro: false };
+  return { id: created.id, email: created.email, isPro: created.isPro };
 }
 
 /**
