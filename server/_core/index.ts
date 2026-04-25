@@ -31,6 +31,17 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+
+  // Health check endpoint — used by Railway, Cloudflare, monitoring tools.
+  // Lives outside /api/* so it doesn't go through tRPC; super-fast, no DB hit.
+  app.get("/health", (_req, res) => {
+    res.json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      service: "x-filter-pro-backend",
+    });
+  });
+
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
