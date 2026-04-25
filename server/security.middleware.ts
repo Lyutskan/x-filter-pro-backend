@@ -7,33 +7,70 @@
 import { Request, Response, NextFunction } from "express";
 
 /**
- * CORS Middleware - Sadece Chrome extension'dan gelen isteklere izin ver
+ * CORS Middleware
+ *
+ * Allowed origins:
+ *   - Chrome / Firefox / Opera / Edge extensions (any extension that loads this backend)
+ *   - https://xfilterpro.com (production site)
+ *   - https://www.xfilterpro.com
+ *   - localhost on common dev ports (3000, 5173, 4173, 8080)
+ *   - process.env.FRONTEND_URL (custom override if set)
+ *
+ * For tRPC + browser fetch with `Authorization: Bearer ...`, both
+ * preflight (OPTIONS) and the actual request must reflect the origin
+ * back. We DO NOT use a wildcard `*` because we send credentials.
  */
 export function corsMiddleware(req: Request, res: Response, next: NextFunction) {
   const origin = req.headers.origin;
-  
-  // Chrome extension'lar için izin verilen origins
-  const allowedOrigins = [
-    "chrome-extension://", // Chrome extension
-    "moz-extension://", // Firefox extension
-    "opera://", // Opera extension
-    process.env.FRONTEND_URL, // Frontend (eğer varsa)
+
+  // Static prefixes — any URL starting with these is allowed.
+  const allowedPrefixes = [
+    "chrome-extension://",
+    "moz-extension://",
+    "edge-extension://",
+    "opera-extension://",
   ];
 
-  // Origin kontrolü
-  if (origin && allowedOrigins.some((allowed) => origin && allowed && origin.startsWith(allowed))) {
-    res.header("Access-Control-Allow-Origin", origin);
-    res.header("Access-Control-Allow-Credentials", "true");
-    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    res.header("Access-Control-Max-Age", "86400"); // 24 hours
+  // Exact-match allow-list. Add new origins here as we ship.
+  const allowedOrigins = new Set<string>([
+    "https://xfilterpro.com",
+    "https://www.xfilterpro.com",
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://localhost:4173",
+    "http://localhost:8080",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:5173",
+  ]);
+  if (process.env.FRONTEND_URL) {
+    allowedOrigins.add(process.env.FRONTEND_URL);
   }
 
-  if (req.method === "OPTIONS") {
-    res.sendStatus(200);
-  } else {
-    next();
+  const isAllowed =
+    !!origin &&
+    (allowedPrefixes.some((p) => origin.startsWith(p)) || allowedOrigins.has(origin));
+
+  if (isAllowed && origin) {
+    res.header("Access-Control-Allow-Origin", origin);
+    res.header("Vary", "Origin"); // tell caches the response varies by Origin
+    res.header("Access-Control-Allow-Credentials", "true");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.header(
+      "Access-Control-Allow-Headers",
+      "Content-Type, Authorization, x-trpc-source",
+    );
+    res.header("Access-Control-Max-Age", "86400");
   }
+
+  // Always answer OPTIONS preflight, even from disallowed origins, so the
+  // browser sees a clear response (the missing CORS headers will then make
+  // it block the actual request — that's the correct behaviour).
+  if (req.method === "OPTIONS") {
+    res.sendStatus(204);
+    return;
+  }
+
+  next();
 }
 
 /**
