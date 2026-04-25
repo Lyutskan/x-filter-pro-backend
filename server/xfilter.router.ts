@@ -419,12 +419,16 @@ export const xfilterRouter = router({
   createCheckoutSession: protectedProcedure
     .input(
       z.object({
-        // Accept "monthly" | "yearly" | "annual" — normalize to backend's expected values.
-        // Site uses "yearly" while internal naming was "annual"; we map them here so callers
-        // don't have to care.
+        // Plan: "monthly" | "yearly" (site) or "monthly" | "annual" (extension legacy).
+        // We accept either name and normalize internally.
         plan: z.enum(["monthly", "yearly", "annual"]).optional(),
         planType: z.enum(["monthly", "yearly", "annual"]).optional(),
+        // Optional language hint for return-page rendering (e.g. "tr", "en").
         lang: z.string().min(2).max(5).optional(),
+        // Optional explicit return URLs — used by the extension which
+        // wants the user back on xfilterpro.com rather than the API host.
+        successUrl: z.string().url().optional(),
+        cancelUrl: z.string().url().optional(),
       }).refine((d) => !!(d.plan || d.planType), {
         message: "plan is required",
       })
@@ -446,13 +450,19 @@ export const xfilterRouter = router({
       const lang = input.lang || "en";
       const origin = ctx.req.headers.origin || "https://xfilterpro.com";
 
+      // Prefer caller-provided URLs; fall back to origin-based defaults.
+      const successUrl = input.successUrl
+        || `${origin}/checkout-success?lang=${encodeURIComponent(lang)}`;
+      const cancelUrl = input.cancelUrl
+        || `${origin}/checkout-cancel?lang=${encodeURIComponent(lang)}`;
+
       const checkoutUrl = await createCheckoutSession({
         userId: ctx.user.id,
         userEmail: ctx.user.email || "",
         userName: ctx.user.name || "User",
         planType,
-        successUrl: `${origin}/checkout-success?lang=${encodeURIComponent(lang)}`,
-        cancelUrl: `${origin}/checkout-cancel?lang=${encodeURIComponent(lang)}`,
+        successUrl,
+        cancelUrl,
       });
 
       return { checkoutUrl };
