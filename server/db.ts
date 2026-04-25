@@ -1,5 +1,4 @@
-
-import { eq, and, gt, gte, lte, desc, asc, sql } from "drizzle-orm";
+import { eq, and, gt, gte, lte, desc, asc } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   InsertUser,
@@ -123,6 +122,102 @@ export async function getUserById(id: number) {
 
   const result = await db.select().from(users).where(eq(users.id, id)).limit(1);
   return result.length > 0 ? result[0] : undefined;
+}
+
+// ========== Email/Password Auth (v2.0+) ==========
+
+/**
+ * Look up a user by their email address. Email is the primary identifier
+ * for password-based login. Returns undefined if not found.
+ */
+export async function getUserByEmail(email: string) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get user: database not available");
+    return undefined;
+  }
+  const normalized = email.trim().toLowerCase();
+  const result = await db
+    .select()
+    .from(users)
+    .where(eq(users.email, normalized))
+    .limit(1);
+  return result.length > 0 ? result[0] : undefined;
+}
+
+/**
+ * Create a brand-new user with email + password hash. The caller must hash
+ * the password (with bcrypt) before passing it here — db.ts does not import
+ * bcrypt to avoid circular deps and keep this module pure.
+ *
+ * Returns the new user row (including auto-generated id).
+ * Throws if email is already taken — caller should catch and surface a
+ * friendly "email already in use" error.
+ */
+export async function createUserWithPassword(
+  email: string,
+  passwordHash: string,
+  name?: string | null,
+): Promise<{ id: number; email: string; isPro: boolean }> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const normalized = email.trim().toLowerCase();
+  const insertResult = await db.insert(users).values({
+    email: normalized,
+    passwordHash,
+    name: name ?? null,
+    loginMethod: "email",
+    role: "user",
+    emailVerified: true, // Skipping email verification in v2.0
+    isPro: false,
+  });
+
+  // Drizzle MySQL: insert returns { insertId, affectedRows }
+  const insertId = (insertResult as unknown as { insertId: number })[0]?.insertId
+    ?? (insertResult as unknown as { insertId: number }).insertId;
+
+  if (!insertId) {
+    // Fallback: re-fetch by email
+    const created = await getUserByEmail(normalized);
+    if (!created) throw new Error("Failed to create user");
+    return { id: created.id, email: created.email, isPro: created.isPro };
+  }
+
+  return { id: insertId, email: normalized, isPro: false };
+}
+
+/**
+ * Update an existing user's password hash. Used for password reset
+ * and "change password" flows.
+ */
+export async function updatePasswordHash(
+  userId: number,
+  passwordHash: string,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db
+    .update(users)
+    .set({ passwordHash })
+    .where(eq(users.id, userId));
+}
+
+/**
+ * Update lastSignedIn timestamp on successful login.
+ * Best-effort — failure here should not block login.
+ */
+export async function touchLastSignedIn(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db
+      .update(users)
+      .set({ lastSignedIn: new Date() })
+      .where(eq(users.id, userId));
+  } catch (err) {
+    console.warn("[Database] Failed to update lastSignedIn:", err);
+  }
 }
 
 // ========== Subscription & Pro Plan ==========
@@ -547,62 +642,3 @@ export async function getUserDevices(userId: number): Promise<DeviceSession[]> {
     .where(eq(deviceSessions.userId, userId))
     .orderBy(desc(deviceSessions.lastSyncedAt));
 }
-
-
-// ===== v2: Email/Password Auth Helpers =====
-
-export async function getUserByEmail(email: string): Promise<User | null> {
-  const db = await getDb();
-  if (!db) return null;
-  const normalized = email.trim().toLowerCase();
-  const rows = await db.select().from(users).where(eq(users.email, normalized)).limit(1);
-  return (rows[0] as User) ?? null;
-}
-
-export async function createEmailUser(params: {
-  email: string;
-  name: string | null;
-  passwordHash: string;
-}): Promise<User> {
-  const db = await getDb();
-  if (!db) throw new Error("Database not available");
-  const normalized = params.email.trim().toLowerCase();
-  const result = await db.insert(users).values({
-    email: normalized,
-    name: params.name,
-    authProvider: "email",
-    passwordHash: params.passwordHash,
-    emailVerified: false,
-    role: "user",
-    isPro: false,
-  });
-  const insertId = (result as any)?.[0]?.insertId ?? (result as any)?.insertId;
-  if (!insertId || typeof insertId !== "number") {
-    throw new Error("Failed to obtain insertId after createEmailUser");
-  }
-  const created = await getUserById(insertId);
-  if (!created) throw new Error("User created but could not be read back");
-  return created;
-}
-
-export async function touchLastSignedIn(userId: number): Promise<void> {
-  const db = await getDb();
-  if (!db) return;
-  await db.update(users).set({ lastSignedIn: new Date() }).where(eq(users.id, userId));
-}
-
-// ===== v2: AI Daily Usage Helper =====
-
-export async function getAiUsageToday(userId: number): Promise<number> {
-  const db = await getDb();
-  if (!db) return 0;
-  const now = new Date();
-  const utcMidnight = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
-  const rows = await db
-    .select()
-    .from(aiUsageLog)
-    .where(and(eq(aiUsageLog.userId, userId), gte(aiUsageLog.createdAt, utcMidnight)));
-  return rows.length;
-}
-
-

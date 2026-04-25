@@ -1,238 +1,248 @@
 /**
- * Auth Router — Email/Password
+ * Auth Router
+ * -----------
+ * tRPC procedures for email/password authentication.
  *
- * FAZA 1 — X Filter Pro
+ * Endpoints (called as `auth.signup`, `auth.login`, etc. from client):
+ *   - signup(email, password, name?)        → create account, return JWT
+ *   - login(email, password)                → verify creds, return JWT
+ *   - me()                                  → return current user (protected)
+ *   - logout()                              → no-op for JWT, kept for symmetry
+ *   - changePassword(currentPw, newPw)      → re-hash and save (protected)
  *
- * tRPC procedure'ları:
- *   - auth.signup (public)   → email + password, yeni kullanıcı oluşturur, session döner
- *   - auth.login  (public)   → email + password doğrular, session döner
- *   - auth.logout (public)   → cookie'yi siler (mevcut kodda vardı, buraya taşındı)
- *   - auth.me     (public)   → mevcut user'ı döner (null olabilir)
+ * All endpoints are public except `me`, `logout`, and `changePassword`.
  *
- * Response formatı:
- *   {
- *     token: string,   // Bearer token (extension için)
- *     user: { id, email, name, isPro, role, authProvider }
- *   }
- *
- * Dashboard için cookie ayrıca set edilir (HttpOnly, Secure, SameSite=None).
- * Extension için tokenı localStorage/chrome.storage'a koyar.
+ * Rate limiting: applied at the Express middleware layer, not here.
+ * Email verification: skipped for v2.0 (emailVerified defaults to true).
+ *   We'll add verify-email + magic-link flows in v2.1 if needed.
  */
 
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
-import { publicProcedure, router } from "./_core/trpc";
-import { signSession } from "./_core/session";
-import { hashPassword, verifyPassword, validatePasswordStrength } from "./_core/password";
-import { getSessionCookieOptions } from "./_core/cookies";
-import * as db from "./db";
+import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import {
+  hashPassword,
+  isValidEmail,
+  normalizeEmail,
+  signJwt,
+  verifyPassword,
+} from "./_core/auth";
+import {
+  createUserWithPassword,
+  getOrCreateSubscription,
+  getUserByEmail,
+  getUserById,
+  touchLastSignedIn,
+  updatePasswordHash,
+} from "./db";
 
-// Public safe user shape — password hash ve internal field'lar çıkarıldı.
-type PublicUser = {
-  id: number;
-  email: string;
-  name: string | null;
-  isPro: boolean;
-  role: "user" | "admin";
-  authProvider: "email" | "google" | "manus";
+// ─────────────────────────────────────────────────────────────────────────────
+// Schemas
+// ─────────────────────────────────────────────────────────────────────────────
+
+const signupInput = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(8).max(200),
+  name: z.string().min(1).max(100).optional().nullable(),
+});
+
+const loginInput = z.object({
+  email: z.string().email().max(320),
+  password: z.string().min(1).max(200),
+});
+
+const changePasswordInput = z.object({
+  currentPassword: z.string().min(1).max(200),
+  newPassword: z.string().min(8).max(200),
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shape returned from signup/login — matches what extension expects
+// ─────────────────────────────────────────────────────────────────────────────
+
+type AuthResponse = {
+  token: string;
+  user: {
+    id: number;
+    email: string;
+    name: string | null;
+    isPro: boolean;
+  };
 };
 
-function toPublicUser(user: {
-  id: number;
-  email: string;
-  name: string | null;
-  isPro: boolean;
-  role: "user" | "admin";
-  authProvider: "email" | "google" | "manus";
-}): PublicUser {
+async function buildAuthResponse(
+  userId: number,
+  email: string,
+  name: string | null,
+  isPro: boolean,
+): Promise<AuthResponse> {
+  const token = await signJwt({ sub: String(userId), email });
   return {
-    id: user.id,
-    email: user.email,
-    name: user.name,
-    isPro: user.isPro,
-    role: user.role,
-    authProvider: user.authProvider,
+    token,
+    user: { id: userId, email, name, isPro },
   };
 }
 
-const emailSchema = z
-  .string()
-  .trim()
-  .toLowerCase()
-  .min(3, "Email too short")
-  .max(320, "Email too long")
-  .email("Invalid email format");
-
-const passwordSchema = z
-  .string()
-  .min(8, "Password must be at least 8 characters")
-  .max(128, "Password too long (max 128)");
-
-const nameSchema = z.string().trim().min(1).max(100).optional();
+// ─────────────────────────────────────────────────────────────────────────────
+// Router
+// ─────────────────────────────────────────────────────────────────────────────
 
 export const authRouter = router({
   /**
-   * Yeni hesap oluştur.
+   * Sign up a new user with email + password.
+   * - Validates email format and password strength via Zod
+   * - Checks email isn't already registered
+   * - Hashes password with bcrypt (cost 10)
+   * - Creates user row + initial subscription row
+   * - Returns JWT + user shape
    */
   signup: publicProcedure
-    .input(
-      z.object({
-        email: emailSchema,
-        password: passwordSchema,
-        name: nameSchema,
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      // Extra strength kontrolü (Zod min 8 zaten kontrol ediyor ama ileride kuralları buraya koyarız)
-      const strength = validatePasswordStrength(input.password);
-      if (!strength.valid) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: strength.reason || "Weak password" });
+    .input(signupInput)
+    .mutation(async ({ input }): Promise<AuthResponse> => {
+      const email = normalizeEmail(input.email);
+
+      if (!isValidEmail(email)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "Please enter a valid email address.",
+        });
       }
 
-      // Email zaten var mı?
-      const existing = await db.getUserByEmail(input.email);
+      // Reject if already registered. Use generic error message to avoid
+      // user enumeration (don't tell attackers which emails exist).
+      const existing = await getUserByEmail(email);
       if (existing) {
-        // Güvenlik notu: ENUMeration leak'i önlemek için aynı mesajı login ve signup'ta verebiliriz.
-        // Ama UX için şu aşamada net mesaj veriyoruz. İleride rate-limit'le koruyacağız.
         throw new TRPCError({
           code: "CONFLICT",
-          message: "An account with this email already exists",
+          message: "An account with this email already exists. Try logging in.",
         });
       }
 
-      const passwordHash = hashPassword(input.password);
+      const passwordHash = await hashPassword(input.password);
 
-      let newUser;
+      let user;
       try {
-        newUser = await db.createEmailUser({
-          email: input.email,
-          name: input.name ?? null,
-          passwordHash,
-        });
+        user = await createUserWithPassword(email, passwordHash, input.name ?? null);
       } catch (err) {
-        console.error("[auth.signup] createEmailUser failed:", err);
+        // Race condition: someone signed up with this email between our check
+        // and the insert. Surface as conflict.
+        const msg = err instanceof Error ? err.message : "";
+        if (msg.toLowerCase().includes("duplicate") || msg.toLowerCase().includes("unique")) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "An account with this email already exists.",
+          });
+        }
+        console.error("[auth.signup] Failed to create user:", err);
         throw new TRPCError({
           code: "INTERNAL_SERVER_ERROR",
-          message: "Failed to create account",
+          message: "Failed to create account. Please try again.",
         });
       }
 
-      // Default subscription oluştur (free plan)
+      // Provision a free-plan subscription row so all downstream code can
+      // assume `subscriptions[userId]` exists.
       try {
-        await db.getOrCreateSubscription(newUser.id);
+        await getOrCreateSubscription(user.id);
       } catch (err) {
-        // Subscription oluşturulamadıysa log'la ama signup'ı başarılı say — sonraki istek tekrar dener.
-        console.error("[auth.signup] getOrCreateSubscription failed:", err);
+        // Non-fatal: subscription will be created on first read.
+        console.warn("[auth.signup] Subscription auto-create failed:", err);
       }
 
-      // Session token
-      const token = await signSession({
-        uid: newUser.id,
-        email: newUser.email,
-        provider: "email",
-      });
-
-      // Dashboard kullanımı için cookie de set et
-      try {
-        const cookieOptions = getSessionCookieOptions(ctx.req);
-        ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-      } catch (err) {
-        // Cookie set edilemediyse (test env vs) token response'ta yine dönüyor, devam.
-        console.warn("[auth.signup] cookie set failed:", err);
-      }
-
-      return {
-        token,
-        user: toPublicUser(newUser),
-      };
+      return buildAuthResponse(user.id, user.email, input.name ?? null, false);
     }),
 
   /**
-   * Email + password ile giriş.
+   * Log in an existing user with email + password.
+   * - Always returns the same generic error for "wrong email" vs "wrong password"
+   *   to prevent user-enumeration attacks
+   * - Updates lastSignedIn on success
    */
   login: publicProcedure
-    .input(
-      z.object({
-        email: emailSchema,
-        password: z.string().min(1).max(1024), // login sırasında strength kuralı yok, sadece uzunluk
-      })
-    )
-    .mutation(async ({ ctx, input }) => {
-      const user = await db.getUserByEmail(input.email);
+    .input(loginInput)
+    .mutation(async ({ input }): Promise<AuthResponse> => {
+      const email = normalizeEmail(input.email);
+      const GENERIC_ERROR = "Invalid email or password.";
 
-      // Sabit-zamanlı hata mesajı: email yok + password yanlış aynı mesaj
-      const invalidMsg = "Invalid email or password";
-
-      if (!user) {
-        // Timing attack koruması: fake bir hash ile verify çalıştır ki yanıt süresi benzer olsun
-        verifyPassword(
-          input.password,
-          "scrypt$16384$8$1$00000000000000000000000000000000$00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
-        );
-        throw new TRPCError({ code: "UNAUTHORIZED", message: invalidMsg });
+      if (!isValidEmail(email)) {
+        throw new TRPCError({ code: "UNAUTHORIZED", message: GENERIC_ERROR });
       }
 
-      if (user.authProvider !== "email" || !user.passwordHash) {
-        // OAuth kullanıcısı şifreyle giriş denedi
-        throw new TRPCError({
-          code: "UNAUTHORIZED",
-          message: "This account does not use password login",
-        });
+      const user = await getUserByEmail(email);
+      if (!user || !user.passwordHash) {
+        // No account, or legacy Manus user (no password). Same error either way.
+        throw new TRPCError({ code: "UNAUTHORIZED", message: GENERIC_ERROR });
       }
 
-      const ok = verifyPassword(input.password, user.passwordHash);
+      const ok = await verifyPassword(input.password, user.passwordHash);
       if (!ok) {
-        throw new TRPCError({ code: "UNAUTHORIZED", message: invalidMsg });
+        throw new TRPCError({ code: "UNAUTHORIZED", message: GENERIC_ERROR });
       }
 
-      // Subscription'ı hazır tut
-      try {
-        await db.getOrCreateSubscription(user.id);
-      } catch (err) {
-        console.error("[auth.login] getOrCreateSubscription failed:", err);
-      }
+      // Best-effort timestamp update; don't block login if it fails.
+      void touchLastSignedIn(user.id);
 
-      const token = await signSession({
-        uid: user.id,
-        email: user.email,
-        provider: "email",
-      });
-
-      try {
-        const cookieOptions = getSessionCookieOptions(ctx.req);
-        ctx.res.cookie(COOKIE_NAME, token, { ...cookieOptions, maxAge: ONE_YEAR_MS });
-      } catch (err) {
-        console.warn("[auth.login] cookie set failed:", err);
-      }
-
-      return {
-        token,
-        user: toPublicUser(user),
-      };
+      return buildAuthResponse(user.id, user.email, user.name ?? null, user.isPro);
     }),
 
   /**
-   * Çıkış — cookie sil. Bearer token tarafında ise istemci kendi token'ını atar.
-   * (Gerçek "revocation" için blacklist tablosu lazım, FAZA 1 kapsamında değil.)
+   * Return the current user's profile. Used by client to refresh state
+   * after page reload (when only the JWT is in storage).
    */
-  logout: publicProcedure.mutation(({ ctx }) => {
-    try {
-      const cookieOptions = getSessionCookieOptions(ctx.req);
-      ctx.res.clearCookie(COOKIE_NAME, { ...cookieOptions, maxAge: -1 });
-    } catch (err) {
-      console.warn("[auth.logout] clearCookie failed:", err);
+  me: protectedProcedure.query(async ({ ctx }) => {
+    // Re-fetch from DB so we get fresh isPro status (might have changed
+    // due to webhook between login and now).
+    const fresh = await getUserById(ctx.user.id);
+    if (!fresh) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
     }
-    return { success: true } as const;
+    return {
+      id: fresh.id,
+      email: fresh.email,
+      name: fresh.name,
+      isPro: fresh.isPro,
+      role: fresh.role,
+    };
   }),
 
   /**
-   * Mevcut oturumdaki user. Yoksa null döner — frontend bunu "logged out" olarak yorumlar.
+   * Logout is a client-side concern with JWT (just delete the token).
+   * We expose this endpoint so the existing extension code that calls
+   * `auth.logout` continues to work without errors.
+   *
+   * Future: if we add a revocation list, this is where we'd insert.
    */
-  me: publicProcedure.query(({ ctx }) => {
-    if (!ctx.user) return null;
-    return toPublicUser(ctx.user);
+  logout: protectedProcedure.mutation(async () => {
+    return { success: true };
   }),
+
+  /**
+   * Change password while logged in. Requires current password to prevent
+   * session-hijack attacks (someone who steals the JWT can't lock the user out).
+   */
+  changePassword: protectedProcedure
+    .input(changePasswordInput)
+    .mutation(async ({ ctx, input }) => {
+      const fresh = await getUserById(ctx.user.id);
+      if (!fresh || !fresh.passwordHash) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "This account doesn't have a password set.",
+        });
+      }
+
+      const ok = await verifyPassword(input.currentPassword, fresh.passwordHash);
+      if (!ok) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "Current password is incorrect.",
+        });
+      }
+
+      const newHash = await hashPassword(input.newPassword);
+      await updatePasswordHash(fresh.id, newHash);
+      return { success: true };
+    }),
 });
 
 export type AuthRouter = typeof authRouter;

@@ -1,17 +1,18 @@
-/**
- * tRPC App Router
- *
- * FAZA 1 değişiklik:
- *  - Yeni authRouter bağlandı (email/password)
- *  - Eski auth.me ve auth.logout authRouter içine taşındı
- *  - Manus OAuth (sdk.ts üzerinden) artık kullanılmıyor
- */
-
+import { authRouter } from "./auth.router";
 import { systemRouter } from "./_core/systemRouter";
 import { router } from "./_core/trpc";
-import { authRouter } from "./auth.router";
 import { xfilterRouter } from "./xfilter.router";
 
+/**
+ * Top-level tRPC router. Exposes three namespaces:
+ *
+ *   system   - infrastructure/health endpoints
+ *   auth     - email/password signup, login, me, logout, changePassword
+ *   xfilter  - product features (filters, AI, sync, etc.)
+ *
+ * v2.0 change: replaced legacy Manus OAuth `auth.me` / `auth.logout` (cookie-
+ * based) with a full email/password router defined in `auth.router.ts`.
+ */
 export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
@@ -19,6 +20,5 @@ export const appRouter = router({
 });
 
 export type AppRouter = typeof appRouter;
-export { xfilterRouter, authRouter };
+export { xfilterRouter };
 export type { XFilterRouter } from "./xfilter.router";
-export type { AuthRouter } from "./auth.router";
