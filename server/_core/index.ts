@@ -8,6 +8,7 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { createStripeRouter } from "../stripe.routes";
 import { initializeScheduler, stopScheduler } from "../scheduler.service";
+import { corsMiddleware } from "../security.middleware";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -31,6 +32,10 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
+
+  // CORS — must be first so OPTIONS preflight gets handled before
+  // any other middleware (especially body parsers and auth).
+  app.use(corsMiddleware);
 
   // Health check endpoint — used by Railway, Cloudflare, monitoring tools.
   // Lives outside /api/* so it doesn't go through tRPC; super-fast, no DB hit.
