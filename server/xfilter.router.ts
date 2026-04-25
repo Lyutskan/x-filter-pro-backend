@@ -21,7 +21,6 @@ import {
   cleanExpiredMutes,
   logAiUsage,
   getAiUsageThisMonth,
-  getAiUsageToday,
   registerDevice,
   getUserDevices,
 } from "./db";
@@ -45,10 +44,9 @@ async function checkMonthlyLimit(userId: number): Promise<boolean> {
 
 async function checkAiLimit(userId: number): Promise<boolean> {
   const sub = await getOrCreateSubscription(userId);
-  // FAZA 2: Günlük limit (Pro: 50, Free: 5)
-  const dailyUsage = await getAiUsageToday(userId);
-  const limit = sub.isPro ? 50 : 5;
-  return dailyUsage < limit;
+  if (sub.isPro) return true;
+  const usage = await getAiUsageThisMonth(userId);
+  return usage < (sub.aiMonthlyLimit || 10);
 }
 
 export const xfilterRouter = router({
@@ -59,9 +57,7 @@ export const xfilterRouter = router({
       isPro: sub.isPro,
       monthlyLimit: sub.monthlyLimit,
       aiMonthlyLimit: sub.aiMonthlyLimit,
-      aiUsageToday: await getAiUsageToday(ctx.user.id),
       aiUsageThisMonth: await getAiUsageThisMonth(ctx.user.id),
-      aiDailyLimit: sub.isPro ? 50 : 5,
     };
   }),
 
@@ -236,7 +232,7 @@ export const xfilterRouter = router({
       if (!canUseAi) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "Günlük AI kullanım limitine ulaştınız. Pro'ya yükseltin.",
+          message: "Aylık AI kullanım limitine ulaştınız. Pro'ya yükseltin.",
         });
       }
 
@@ -303,7 +299,7 @@ export const xfilterRouter = router({
       if (!canUseAi) {
         throw new TRPCError({
           code: "FORBIDDEN",
-          message: "Günlük AI kullanım limitine ulaştınız. Pro'ya yükseltin.",
+          message: "Aylık AI kullanım limitine ulaştınız. Pro'ya yükseltin.",
         });
       }
 
@@ -423,7 +419,14 @@ export const xfilterRouter = router({
   createCheckoutSession: protectedProcedure
     .input(
       z.object({
-        planType: z.enum(["monthly", "yearly", "annual"]).transform(v => v === "yearly" ? "annual" : v),
+        // Accept "monthly" | "yearly" | "annual" — normalize to backend's expected values.
+        // Site uses "yearly" while internal naming was "annual"; we map them here so callers
+        // don't have to care.
+        plan: z.enum(["monthly", "yearly", "annual"]).optional(),
+        planType: z.enum(["monthly", "yearly", "annual"]).optional(),
+        lang: z.string().min(2).max(5).optional(),
+      }).refine((d) => !!(d.plan || d.planType), {
+        message: "plan is required",
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -436,14 +439,20 @@ export const xfilterRouter = router({
         });
       }
 
-      const origin = ctx.req.headers.origin || "https://app.xfilterpro.com";
+      // Normalize plan: yearly → annual (backend's internal name)
+      const rawPlan = input.plan || input.planType || "monthly";
+      const planType: "monthly" | "annual" = rawPlan === "yearly" ? "annual" : rawPlan as "monthly" | "annual";
+
+      const lang = input.lang || "en";
+      const origin = ctx.req.headers.origin || "https://xfilterpro.com";
+
       const checkoutUrl = await createCheckoutSession({
         userId: ctx.user.id,
         userEmail: ctx.user.email || "",
         userName: ctx.user.name || "User",
-        planType: input.planType,
-        successUrl: `${origin}/payment-success`,
-        cancelUrl: `${origin}/payment-cancel`,
+        planType,
+        successUrl: `${origin}/checkout-success?lang=${encodeURIComponent(lang)}`,
+        cancelUrl: `${origin}/checkout-cancel?lang=${encodeURIComponent(lang)}`,
       });
 
       return { checkoutUrl };
@@ -459,10 +468,10 @@ export const xfilterRouter = router({
       });
     }
 
-    const origin = ctx.req.headers.origin || "https://app.xfilterpro.com";
+    const origin = ctx.req.headers.origin || "https://xfilterpro.com";
     const portalUrl = await createCustomerPortalSession(
       sub.stripeCustomerId,
-      `${origin}/settings`
+      `${origin}/account`
     );
 
     return { portalUrl };
@@ -516,7 +525,7 @@ export function formatTimeDisplay(seconds: number): string {
 // Payment helper
 export async function getCheckoutUrl(
   userId: number,
-  planType: "monthly" | "yearly",
+  planType: "monthly" | "annual",
   origin: string
 ): Promise<string> {
   return createCheckoutSession({
