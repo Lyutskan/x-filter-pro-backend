@@ -498,6 +498,30 @@ export async function getAiUsageThisMonth(userId: number): Promise<number> {
   return result.length;
 }
 
+/**
+ * Count of AI summaries the user has consumed since 00:00 UTC today.
+ * Used to enforce free-tier daily limits (e.g. 5 summaries/day).
+ */
+export async function getAiUsageToday(userId: number): Promise<number> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+
+  const now = new Date();
+  const dayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+  const result = await db
+    .select()
+    .from(aiUsageLog)
+    .where(
+      and(
+        eq(aiUsageLog.userId, userId),
+        gte(aiUsageLog.createdAt, dayStart),
+      ),
+    );
+
+  return result.length;
+}
+
 // ========== Device Sessions ==========
 export async function registerDevice(
   userId: number,
