@@ -1,24 +1,8 @@
-/**
- * tRPC Context
- *
- * FAZA 1 değişiklik — X Filter Pro
- *
- * Manus SDK'ya bağımlılığı kaldırdık. Artık iki token kaynağını da kabul ediyoruz:
- *   1. Cookie (web dashboard için, HttpOnly)
- *   2. Authorization: Bearer <token> (Chrome extension için)
- *
- * Her ikisi de aynı JWT formatını kullanır (_core/session.ts).
- * Bearer header öncelikli — eğer varsa cookie'ye bakmıyoruz.
- *
- * Fail modu: token yoksa veya bozuksa user=null, throw etmiyoruz.
- * Protected procedure'lar _core/trpc.ts'te user=null'ı 401'e çevirir.
- */
-
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
+import type { Request } from "express";
 import type { User } from "../../drizzle/schema";
-import * as dbMod from "../db";
-import { COOKIE_NAME } from "@shared/const";
-import { extractBearerToken, extractCookie, verifySession } from "./session";
+import { verifyJwt } from "./auth";
+import { getUserById } from "../db";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
@@ -26,36 +10,56 @@ export type TrpcContext = {
   user: User | null;
 };
 
-export async function createContext(opts: CreateExpressContextOptions): Promise<TrpcContext> {
+/**
+ * Extract the JWT from the request.
+ *
+ * Order of precedence:
+ *   1. `Authorization: Bearer <token>` header (extension uses this)
+ *   2. `xfp_token` cookie (site uses this for httpOnly cookie flow)
+ *
+ * Returns null if neither is present.
+ */
+function extractToken(req: Request): string | null {
+  // 1. Authorization header
+  const authHeader = req.headers["authorization"];
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
+    return authHeader.slice("Bearer ".length).trim();
+  }
+
+  // 2. Cookie fallback (for browser-based flows)
+  const cookieHeader = req.headers["cookie"];
+  if (typeof cookieHeader === "string") {
+    const match = cookieHeader.match(/(?:^|;\s*)xfp_token=([^;]+)/);
+    if (match && match[1]) {
+      return decodeURIComponent(match[1]);
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Resolve the authenticated user (or null) for a tRPC request.
+ * Authentication is optional at the context layer — protected procedures
+ * enforce the user-is-present check via tRPC middleware in `_core/trpc.ts`.
+ */
+export async function createContext(
+  opts: CreateExpressContextOptions,
+): Promise<TrpcContext> {
   let user: User | null = null;
 
-  try {
-    // 1) Bearer header önce (extension)
-    let token = extractBearerToken(opts.req.headers.authorization);
-
-    // 2) Yoksa cookie (web dashboard)
-    if (!token) {
-      token = extractCookie(opts.req.headers.cookie, COOKIE_NAME);
-    }
-
-    if (token) {
-      const session = await verifySession(token);
-      if (session) {
-        // Token geçerli — user'ı DB'den tazele (Pro status değişmiş olabilir).
-        const freshUser = await dbMod.getUserById(session.uid);
-        if (freshUser) {
-          user = freshUser;
-          // lastSignedIn'i güncellemek için fire-and-forget (auth path'i yavaşlatmayalım).
-          dbMod.touchLastSignedIn(freshUser.id).catch(() => {
-            /* sessizce yut — critical değil */
-          });
+  const token = extractToken(opts.req);
+  if (token) {
+    const payload = await verifyJwt(token);
+    if (payload?.sub) {
+      const userId = Number(payload.sub);
+      if (Number.isFinite(userId)) {
+        const dbUser = await getUserById(userId);
+        if (dbUser) {
+          user = dbUser as User;
         }
       }
     }
-  } catch (error) {
-    // Auth hatası public procedure'ları bloklamasın.
-    console.warn("[Context] Auth attempt failed:", error instanceof Error ? error.message : error);
-    user = null;
   }
 
   return {
