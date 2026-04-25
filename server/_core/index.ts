@@ -138,17 +138,19 @@ async function startServer() {
     res.type("html").send(renderCheckoutPage("cancel", lang));
   });
 
-  // Configure body parser with larger size limit for file uploads
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
-  // Stripe webhook endpoint - MUST be before express.json()
-  // The webhook signature verification requires raw body
+  // ⚠️ ORDER MATTERS — Stripe webhook MUST come BEFORE express.json().
+  // Stripe verifies the signature using the raw request body. If express.json()
+  // runs first it parses the body into a JS object, and the signature check
+  // breaks with: "Webhook payload must be provided as a string or a Buffer".
   app.use(
     "/api/stripe",
     express.raw({ type: "application/json" }),
     createStripeRouter()
   );
+
+  // Body parsers for everything ELSE (tRPC, auth, etc.)
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
   // tRPC API
   app.use(
