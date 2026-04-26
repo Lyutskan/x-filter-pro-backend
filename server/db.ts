@@ -10,6 +10,7 @@ import {
   aiUsageLog,
   deviceSessions,
   passwordResetTokens,
+  emailVerificationTokens,
   type Subscription,
   type SeenTweet,
   type DailyStat,
@@ -83,6 +84,7 @@ export async function createUserWithPassword(
   email: string,
   passwordHash: string,
   name?: string | null,
+  emailVerified: boolean = false,
 ): Promise<{ id: number; email: string; isPro: boolean }> {
   const db = await getDb();
   if (!db) throw new Error("Database not available");
@@ -94,7 +96,7 @@ export async function createUserWithPassword(
     name: name ?? null,
     loginMethod: "email",
     role: "user",
-    emailVerified: true, // Skipping email verification in v2.0
+    emailVerified,
     isPro: false,
   });
 
@@ -660,4 +662,73 @@ export async function deleteAllPasswordResetTokensForUser(userId: number): Promi
   } catch (err) {
     console.warn("[Database] Failed to delete reset tokens:", err);
   }
+}
+
+// ========== Email Verification (v2.1+) ==========
+
+export async function createEmailVerificationToken(
+  userId: number,
+  token: string,
+  expiresInMs: number = 24 * 60 * 60 * 1000, // 24h
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(emailVerificationTokens).values({
+    userId,
+    token,
+    expiresAt: new Date(Date.now() + expiresInMs),
+  });
+}
+
+export async function getValidEmailVerificationToken(token: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(emailVerificationTokens)
+    .where(eq(emailVerificationTokens.token, token))
+    .limit(1);
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  if (row.usedAt) return null;
+  if (row.expiresAt.getTime() < Date.now()) return null;
+  return row;
+}
+
+export async function markEmailVerificationTokenUsed(token: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db
+      .update(emailVerificationTokens)
+      .set({ usedAt: new Date() })
+      .where(eq(emailVerificationTokens.token, token));
+  } catch (err) {
+    console.warn("[Database] Failed to mark email verification token used:", err);
+  }
+}
+
+export async function deleteEmailVerificationTokensForUser(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db
+      .delete(emailVerificationTokens)
+      .where(eq(emailVerificationTokens.userId, userId));
+  } catch (err) {
+    console.warn("[Database] Failed to delete email verification tokens:", err);
+  }
+}
+
+/**
+ * Mark a user's email as verified. Called by auth.verifyEmail after the
+ * one-time token has been validated.
+ */
+export async function setEmailVerified(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db
+    .update(users)
+    .set({ emailVerified: true })
+    .where(eq(users.id, userId));
 }

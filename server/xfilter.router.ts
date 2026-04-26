@@ -434,6 +434,15 @@ export const xfilterRouter = router({
       })
     )
     .mutation(async ({ ctx, input }) => {
+      // Email must be verified before upgrading to Pro.
+      // Surfaces a clear error to the site so it can prompt the user.
+      if (!ctx.user.emailVerified) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "EMAIL_NOT_VERIFIED",
+        });
+      }
+
       // Zaten Pro ise checkout'a izin verme
       const sub = await getOrCreateSubscription(ctx.user.id);
       if (sub.isPro) {

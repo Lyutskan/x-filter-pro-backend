@@ -28,14 +28,19 @@ import {
   verifyPassword,
 } from "./_core/auth";
 import {
+  createEmailVerificationToken,
   createPasswordResetToken,
   createUserWithPassword,
   deleteAllPasswordResetTokensForUser,
+  deleteEmailVerificationTokensForUser,
   getOrCreateSubscription,
   getUserByEmail,
   getUserById,
+  getValidEmailVerificationToken,
   getValidPasswordResetToken,
+  markEmailVerificationTokenUsed,
   markPasswordResetTokenUsed,
+  setEmailVerified,
   touchLastSignedIn,
   updatePasswordHash,
 } from "./db";
@@ -128,7 +133,8 @@ export const authRouter = router({
 
       let user;
       try {
-        user = await createUserWithPassword(email, passwordHash, input.name ?? null);
+        // emailVerified=false → user must click verification link
+        user = await createUserWithPassword(email, passwordHash, input.name ?? null, false);
       } catch (err) {
         // Race condition: someone signed up with this email between our check
         // and the insert. Surface as conflict.
@@ -154,6 +160,10 @@ export const authRouter = router({
         // Non-fatal: subscription will be created on first read.
         console.warn("[auth.signup] Subscription auto-create failed:", err);
       }
+
+      // Fire-and-forget: send verification email. Login still works without
+      // verification, but Pro upgrade is gated until verified.
+      void sendVerificationEmail(user.id, user.email, input.name ?? null);
 
       return buildAuthResponse(user.id, user.email, input.name ?? null, false);
     }),
@@ -208,6 +218,7 @@ export const authRouter = router({
       name: fresh.name,
       isPro: fresh.isPro,
       role: fresh.role,
+      emailVerified: fresh.emailVerified,
     };
   }),
 
@@ -337,7 +348,122 @@ export const authRouter = router({
 
       return { success: true };
     }),
+
+  /**
+   * Verify email via the token sent in the welcome email.
+   * Marks the user's emailVerified=true and invalidates the token.
+   */
+  verifyEmail: publicProcedure
+    .input(z.object({ token: z.string().min(32).max(256) }))
+    .mutation(async ({ input }) => {
+      const tokenRow = await getValidEmailVerificationToken(input.token);
+      if (!tokenRow) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "This verification link is invalid or has expired. You can request a new one.",
+        });
+      }
+
+      await setEmailVerified(tokenRow.userId);
+      await markEmailVerificationTokenUsed(input.token);
+      await deleteEmailVerificationTokensForUser(tokenRow.userId);
+
+      return { success: true };
+    }),
+
+  /**
+   * Re-send the verification email for the currently logged-in user.
+   * Throttled by the auth rate limiter (5 attempts / 15 min).
+   * No-op if the user is already verified.
+   */
+  resendVerification: protectedProcedure.mutation(async ({ ctx }) => {
+    const fresh = await getUserById(ctx.user.id);
+    if (!fresh) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "User not found" });
+    }
+    if (fresh.emailVerified) {
+      return { success: true, alreadyVerified: true };
+    }
+
+    await sendVerificationEmail(fresh.id, fresh.email, fresh.name ?? null);
+    return { success: true };
+  }),
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Verification email helper
+// Kept here (not in sendgrid.service.ts) because it's tightly coupled to the
+// auth flow — it owns the token table and the URL format.
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function sendVerificationEmail(
+  userId: number,
+  email: string,
+  name: string | null,
+): Promise<void> {
+  // Drop any prior tokens for this user — only the latest is valid.
+  await deleteEmailVerificationTokensForUser(userId);
+
+  const token = crypto.randomBytes(32).toString("hex");
+  try {
+    await createEmailVerificationToken(userId, token, 24 * 60 * 60 * 1000);
+  } catch (err) {
+    console.error("[sendVerificationEmail] DB error:", err);
+    return;
+  }
+
+  const SITE = process.env.SITE_URL || "https://xfilterpro.com";
+  const verifyUrl = `${SITE}/verify-email?token=${encodeURIComponent(token)}`;
+
+  try {
+    await sendEmailViaSendGrid(email, {
+      subject: "Verify your X Filter Pro email",
+      html: buildVerificationEmailHtml(verifyUrl, name),
+      text: buildVerificationEmailText(verifyUrl, name),
+    });
+  } catch (err) {
+    console.error("[sendVerificationEmail] Email send failed:", err);
+  }
+}
+
+function buildVerificationEmailHtml(verifyUrl: string, name: string | null): string {
+  const greeting = name ? `Hi ${escapeHtml(name)},` : "Hi there,";
+  return `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0a0a14;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#e8e8f0;">
+<div style="max-width:560px;margin:0 auto;padding:48px 24px;">
+  <div style="background:#14141e;border:1px solid #1e1e30;border-radius:16px;padding:36px 32px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
+      <div style="width:32px;height:32px;background:linear-gradient(135deg,#ffd166,#f7b733);border-radius:7px;"></div>
+      <span style="font-weight:700;font-size:16px;">X Filter <span style="color:#ffd166">Pro</span></span>
+    </div>
+    <h1 style="font-size:22px;font-weight:800;margin:0 0 14px;line-height:1.3;">Welcome — verify your email</h1>
+    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 24px;">${greeting}</p>
+    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 24px;">Thanks for signing up to X Filter Pro! Click the button below to confirm your email and unlock all account features. This link expires in 24 hours.</p>
+    <a href="${verifyUrl}" style="display:inline-block;background:linear-gradient(135deg,#ffd166,#f7b733);color:#000;text-decoration:none;padding:14px 32px;border-radius:10px;font-weight:700;font-size:14px;">Verify email</a>
+    <p style="color:#66668a;font-size:12px;line-height:1.6;margin:28px 0 0;font-family:monospace;">Or copy this link:<br><a href="${verifyUrl}" style="color:#6ee7f7;word-break:break-all;">${verifyUrl}</a></p>
+    <hr style="border:none;border-top:1px solid #1e1e30;margin:32px 0;">
+    <p style="color:#66668a;font-size:12px;line-height:1.6;margin:0;">If you didn't sign up for X Filter Pro, you can safely ignore this email.</p>
+  </div>
+  <p style="text-align:center;color:#66668a;font-size:11px;font-family:monospace;margin-top:24px;">© 2026 X Filter Pro · support@xfilterpro.com</p>
+</div>
+</body></html>`;
+}
+
+function buildVerificationEmailText(verifyUrl: string, name: string | null): string {
+  const greeting = name ? `Hi ${name},` : "Hi there,";
+  return `${greeting}
+
+Thanks for signing up to X Filter Pro!
+Click this link to verify your email:
+
+${verifyUrl}
+
+This link expires in 24 hours.
+
+If you didn't sign up, you can safely ignore this email.
+
+— X Filter Pro
+support@xfilterpro.com`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Email templates (kept inline for simplicity; move to a separate file if
