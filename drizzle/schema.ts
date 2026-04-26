@@ -46,6 +46,24 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect & { isPro: boolean };
 export type InsertUser = typeof users.$inferInsert & { isPro?: boolean };
 
+/**
+ * Password reset tokens — created when user clicks "Forgot password".
+ * Tokens are random 32-byte strings, expire after 1 hour, single-use.
+ *
+ * We don't reveal whether the email exists in the system, so even invalid
+ * password reset requests succeed silently. The token is only emailed
+ * to the actual mailbox owner.
+ */
+export const passwordResetTokens = mysqlTable("password_reset_tokens", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  token: varchar("token", { length: 128 }).notNull().unique(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  usedAt: timestamp("usedAt"), // null = unused; set on successful reset
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 
 
 /**
