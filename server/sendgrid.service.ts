@@ -43,13 +43,15 @@ async function sendViaAPI(
           name: "X Filter Pro",
         },
         content: [
-          {
-            type: "text/html",
-            value: htmlContent,
-          },
+          // SendGrid requires text/plain to come before text/html.
+          // Otherwise the API returns: "text/plain must be first, followed by text/html".
           {
             type: "text/plain",
             value: textContent,
+          },
+          {
+            type: "text/html",
+            value: htmlContent,
           },
         ],
         reply_to: {
