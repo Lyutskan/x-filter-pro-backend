@@ -28,13 +28,19 @@ import {
   verifyPassword,
 } from "./_core/auth";
 import {
+  createPasswordResetToken,
   createUserWithPassword,
+  deleteAllPasswordResetTokensForUser,
   getOrCreateSubscription,
   getUserByEmail,
   getUserById,
+  getValidPasswordResetToken,
+  markPasswordResetTokenUsed,
   touchLastSignedIn,
   updatePasswordHash,
 } from "./db";
+import { sendEmailViaSendGrid } from "./sendgrid.service";
+import crypto from "crypto";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Schemas
@@ -243,6 +249,147 @@ export const authRouter = router({
       await updatePasswordHash(fresh.id, newHash);
       return { success: true };
     }),
+
+  /**
+   * Step 1 of password reset: user enters their email, we email them a link.
+   *
+   * Security model:
+   *   - We ALWAYS return { success: true }, even if email is unknown.
+   *     This prevents user enumeration via the reset form.
+   *   - Token is 32 bytes of cryptographic randomness (256 bits).
+   *   - Token expires in 1 hour, single-use.
+   *   - We delete all previous reset tokens for this user when creating
+   *     a new one — protects against multiple-link abuse.
+   *
+   * Email delivery:
+   *   - Sent via SendGrid using EMAIL_FROM env var.
+   *   - If SENDGRID_API_KEY isn't set, sendgrid.service.ts logs and no-ops
+   *     (we still return success — failure mode is hidden from caller).
+   */
+  requestPasswordReset: publicProcedure
+    .input(z.object({ email: z.string().email().max(320) }))
+    .mutation(async ({ input }) => {
+      const email = normalizeEmail(input.email);
+      const GENERIC_OK = { success: true } as const;
+
+      const user = await getUserByEmail(email);
+      if (!user) return GENERIC_OK; // silent; don't enumerate emails
+
+      // Generate 256-bit random token, hex-encode (64 chars)
+      const token = crypto.randomBytes(32).toString("hex");
+
+      // Invalidate any existing reset tokens for this user
+      await deleteAllPasswordResetTokensForUser(user.id);
+
+      // Persist new token (1-hour TTL)
+      try {
+        await createPasswordResetToken(user.id, token, 60 * 60 * 1000);
+      } catch (err) {
+        console.error("[auth.requestPasswordReset] DB error:", err);
+        // Still return success to avoid leaking info; user can retry.
+        return GENERIC_OK;
+      }
+
+      // Build reset link (site, not API, since user clicks from email)
+      const SITE = process.env.SITE_URL || "https://xfilterpro.com";
+      const resetUrl = `${SITE}/reset-password?token=${encodeURIComponent(token)}`;
+
+      // Send the email — non-blocking failure, don't tell the caller
+      try {
+        await sendEmailViaSendGrid(email, {
+          subject: "Reset your X Filter Pro password",
+          html: buildResetEmailHtml(resetUrl, user.name ?? null),
+          text: buildResetEmailText(resetUrl, user.name ?? null),
+        });
+      } catch (err) {
+        console.error("[auth.requestPasswordReset] Email send failed:", err);
+      }
+
+      return GENERIC_OK;
+    }),
+
+  /**
+   * Step 2 of password reset: user submits the token + new password.
+   * On success we update the password hash and invalidate the token.
+   */
+  resetPassword: publicProcedure
+    .input(
+      z.object({
+        token: z.string().min(32).max(256),
+        newPassword: z.string().min(8).max(200),
+      }),
+    )
+    .mutation(async ({ input }) => {
+      const tokenRow = await getValidPasswordResetToken(input.token);
+      if (!tokenRow) {
+        throw new TRPCError({
+          code: "UNAUTHORIZED",
+          message: "This password reset link is invalid or has expired.",
+        });
+      }
+
+      const newHash = await hashPassword(input.newPassword);
+      await updatePasswordHash(tokenRow.userId, newHash);
+
+      // Invalidate this and any other outstanding tokens for this user.
+      await markPasswordResetTokenUsed(input.token);
+      await deleteAllPasswordResetTokensForUser(tokenRow.userId);
+
+      return { success: true };
+    }),
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email templates (kept inline for simplicity; move to a separate file if
+// templates grow more elaborate or get reused).
+// ─────────────────────────────────────────────────────────────────────────────
+
+function buildResetEmailHtml(resetUrl: string, name: string | null): string {
+  const greeting = name ? `Hi ${escapeHtml(name)},` : "Hi there,";
+  return `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0a0a14;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#e8e8f0;">
+<div style="max-width:560px;margin:0 auto;padding:48px 24px;">
+  <div style="background:#14141e;border:1px solid #1e1e30;border-radius:16px;padding:36px 32px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:28px;">
+      <div style="width:32px;height:32px;background:linear-gradient(135deg,#ffd166,#f7b733);border-radius:7px;"></div>
+      <span style="font-weight:700;font-size:16px;">X Filter <span style="color:#ffd166">Pro</span></span>
+    </div>
+    <h1 style="font-size:22px;font-weight:800;margin:0 0 14px;line-height:1.3;">Reset your password</h1>
+    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 24px;">${greeting}</p>
+    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 24px;">We received a request to reset your X Filter Pro password. Click the button below to choose a new one. This link expires in 1 hour.</p>
+    <a href="${resetUrl}" style="display:inline-block;background:linear-gradient(135deg,#ffd166,#f7b733);color:#000;text-decoration:none;padding:14px 32px;border-radius:10px;font-weight:700;font-size:14px;">Reset password</a>
+    <p style="color:#66668a;font-size:12px;line-height:1.6;margin:28px 0 0;font-family:monospace;">Or copy this link:<br><a href="${resetUrl}" style="color:#6ee7f7;word-break:break-all;">${resetUrl}</a></p>
+    <hr style="border:none;border-top:1px solid #1e1e30;margin:32px 0;">
+    <p style="color:#66668a;font-size:12px;line-height:1.6;margin:0;">If you didn't request this, you can safely ignore this email — your password won't change.</p>
+  </div>
+  <p style="text-align:center;color:#66668a;font-size:11px;font-family:monospace;margin-top:24px;">© 2026 X Filter Pro · support@xfilterpro.com</p>
+</div>
+</body></html>`;
+}
+
+function buildResetEmailText(resetUrl: string, name: string | null): string {
+  const greeting = name ? `Hi ${name},` : "Hi there,";
+  return `${greeting}
+
+We received a request to reset your X Filter Pro password.
+Click this link to choose a new password:
+
+${resetUrl}
+
+This link expires in 1 hour.
+
+If you didn't request this, you can safely ignore this email.
+
+— X Filter Pro
+support@xfilterpro.com`;
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
 
 export type AuthRouter = typeof authRouter;

@@ -9,6 +9,7 @@ import {
   mutedAccounts,
   aiUsageLog,
   deviceSessions,
+  passwordResetTokens,
   type Subscription,
   type SeenTweet,
   type DailyStat,
@@ -583,4 +584,80 @@ export async function getUserDevices(userId: number): Promise<DeviceSession[]> {
     .from(deviceSessions)
     .where(eq(deviceSessions.userId, userId))
     .orderBy(desc(deviceSessions.lastSyncedAt));
+}
+
+// ========== Password Reset Tokens (v2.1+) ==========
+
+/**
+ * Create a new password-reset token for a user.
+ * Token is the caller's responsibility (random 32-byte hex), so this fn
+ * doesn't assume any encoding — just stores what's given.
+ *
+ * Tokens expire in 1 hour by default (caller can override).
+ * Single-use: marked with `usedAt` after redemption.
+ */
+export async function createPasswordResetToken(
+  userId: number,
+  token: string,
+  expiresInMs: number = 60 * 60 * 1000,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(passwordResetTokens).values({
+    userId,
+    token,
+    expiresAt: new Date(Date.now() + expiresInMs),
+  });
+}
+
+/**
+ * Look up a token. Returns the row if it exists, is unexpired, AND unused.
+ * Returns null otherwise — caller treats this as "invalid token".
+ */
+export async function getValidPasswordResetToken(token: string) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(passwordResetTokens)
+    .where(eq(passwordResetTokens.token, token))
+    .limit(1);
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  if (row.usedAt) return null;
+  if (row.expiresAt.getTime() < Date.now()) return null;
+  return row;
+}
+
+/**
+ * Mark a token as redeemed. Call AFTER the password has been updated.
+ * Best-effort; failure here is logged but not propagated.
+ */
+export async function markPasswordResetTokenUsed(token: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db
+      .update(passwordResetTokens)
+      .set({ usedAt: new Date() })
+      .where(eq(passwordResetTokens.token, token));
+  } catch (err) {
+    console.warn("[Database] Failed to mark password reset token used:", err);
+  }
+}
+
+/**
+ * Delete every reset token for a user — useful after a successful reset
+ * to invalidate any other outstanding links.
+ */
+export async function deleteAllPasswordResetTokensForUser(userId: number): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db
+      .delete(passwordResetTokens)
+      .where(eq(passwordResetTokens.userId, userId));
+  } catch (err) {
+    console.warn("[Database] Failed to delete reset tokens:", err);
+  }
 }
