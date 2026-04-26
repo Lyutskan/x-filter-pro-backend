@@ -8,6 +8,8 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { createStripeRouter } from "../stripe.routes";
 import { initializeScheduler, stopScheduler } from "../scheduler.service";
+import { runStartupMigrations } from "./migrations";
+import { getDb } from "../db";
 import { corsMiddleware } from "../security.middleware";
 import { rateLimitMiddleware, authRateLimitMiddleware, startRateLimitCleanup } from "../security.middleware";
 
@@ -185,6 +187,14 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
   });
+
+  // Run idempotent schema migrations once after boot.
+  try {
+    const db = await getDb();
+    if (db) await runStartupMigrations(db);
+  } catch (err) {
+    console.error("[Server] Migration runner failed:", err);
+  }
 
   // Periodic cleanup of expired rate-limit entries to keep memory bounded.
   startRateLimitCleanup();
