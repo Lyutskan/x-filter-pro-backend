@@ -39,6 +39,24 @@ const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    name: "0004_email_verification_tokens",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS email_verification_tokens (
+        id INT AUTO_INCREMENT NOT NULL,
+        userId INT NOT NULL,
+        token VARCHAR(128) NOT NULL,
+        expiresAt TIMESTAMP NOT NULL,
+        usedAt TIMESTAMP NULL,
+        createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY email_verification_tokens_token_unique (token),
+        KEY email_verification_tokens_userId_idx (userId)
+      )`,
+      // Mark all existing users as verified (they signed up before email verification was a thing)
+      `UPDATE users SET emailVerified = true WHERE emailVerified IS NULL OR emailVerified = false`,
+    ],
+  },
   // Future migrations: append here. Never edit existing entries.
 ];
 
