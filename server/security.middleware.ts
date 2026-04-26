@@ -146,6 +146,89 @@ export function rateLimitMiddleware(
 }
 
 /**
+ * Auth-specific rate limiter — much stricter than general API rate limit.
+ *
+ * Why a separate limiter:
+ *   - Brute-force protection on login/signup needs aggressive throttling
+ *   - 5 attempts / 15 min is the OWASP recommendation for auth endpoints
+ *   - Keyed by IP only (not email) — so an attacker who tries many emails
+ *     from the same IP still gets throttled
+ *
+ * Limits:
+ *   - 5 requests per 15-minute window per IP
+ *   - Returns 429 with `retryAfter` (seconds) on overflow
+ *   - Successful requests still count toward the limit (simpler & safer)
+ *
+ * Memory note: Counters live in-process; they reset on server restart and
+ * aren't shared between Railway replicas. For a single-replica hobby setup
+ * this is fine. If we ever scale horizontally we should move to Redis.
+ */
+const authAttempts = new Map<string, { count: number; resetTime: number }>();
+
+export function authRateLimitMiddleware() {
+  const MAX_ATTEMPTS = 5;
+  const WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+
+  return (req: Request, res: Response, next: NextFunction) => {
+    // Only apply to auth.signup, auth.login, auth.changePassword.
+    // tRPC routes auth procedures under /api/trpc/auth.<procedure>.
+    const path = req.path;
+    const isAuth =
+      path.startsWith("/auth.signup") ||
+      path.startsWith("/auth.login") ||
+      path.startsWith("/auth.changePassword");
+    if (!isAuth) return next();
+
+    const ip = req.ip || req.connection.remoteAddress || "unknown";
+    const now = Date.now();
+
+    let record = authAttempts.get(ip);
+    if (!record || now > record.resetTime) {
+      record = { count: 0, resetTime: now + WINDOW_MS };
+      authAttempts.set(ip, record);
+    }
+    record.count++;
+
+    res.header("X-RateLimit-Limit", String(MAX_ATTEMPTS));
+    res.header("X-RateLimit-Remaining", String(Math.max(0, MAX_ATTEMPTS - record.count)));
+    res.header("X-RateLimit-Reset", String(record.resetTime));
+
+    if (record.count > MAX_ATTEMPTS) {
+      const retryAfter = Math.ceil((record.resetTime - now) / 1000);
+      res.status(429).json({
+        error: {
+          json: {
+            message: `Too many auth attempts. Try again in ${Math.ceil(retryAfter / 60)} minutes.`,
+            code: -32600,
+            data: { code: "TOO_MANY_REQUESTS", httpStatus: 429 },
+          },
+        },
+        retryAfter,
+      });
+      return;
+    }
+
+    next();
+  };
+}
+
+/**
+ * Periodic cleanup of stale rate-limit entries to prevent memory bloat.
+ * Called once at startup; the timer survives for the process lifetime.
+ */
+export function startRateLimitCleanup() {
+  setInterval(() => {
+    const now = Date.now();
+    for (const [key, record] of requestCounts.entries()) {
+      if (now > record.resetTime) requestCounts.delete(key);
+    }
+    for (const [key, record] of authAttempts.entries()) {
+      if (now > record.resetTime) authAttempts.delete(key);
+    }
+  }, 5 * 60 * 1000); // every 5 min
+}
+
+/**
  * API Key Validation Middleware
  * tRPC için gerekli değil (auth context'te yapılıyor), ama REST API'ler için
  */
