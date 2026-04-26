@@ -8,7 +8,7 @@
 import type { EmailTemplate } from "./email.service";
 
 const SENDGRID_API_KEY = process.env.SENDGRID_API_KEY;
-const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || "noreply@xfilterpro.com";
+const SENDGRID_FROM_EMAIL = process.env.SENDGRID_FROM_EMAIL || process.env.EMAIL_FROM || "support@xfilterpro.com";
 
 /**
  * SendGrid API'ye istek gönder
