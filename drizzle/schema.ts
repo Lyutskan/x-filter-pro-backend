@@ -65,6 +65,25 @@ export const passwordResetTokens = mysqlTable("password_reset_tokens", {
 
 export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
 
+/**
+ * Email verification tokens — created on signup and on user-requested resend.
+ * Same shape as password_reset_tokens; we keep them separate for clarity
+ * (different expiry policy + different consumer).
+ *
+ * Tokens expire after 24 hours (longer than password reset because verification
+ * is less time-critical and people sometimes click old emails).
+ */
+export const emailVerificationTokens = mysqlTable("email_verification_tokens", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  token: varchar("token", { length: 128 }).notNull().unique(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  usedAt: timestamp("usedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type EmailVerificationToken = typeof emailVerificationTokens.$inferSelect;
+
 
 /**
  * Pro Plan ve Subscription Yönetimi
