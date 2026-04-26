@@ -9,6 +9,7 @@ import { serveStatic, setupVite } from "./vite";
 import { createStripeRouter } from "../stripe.routes";
 import { initializeScheduler, stopScheduler } from "../scheduler.service";
 import { corsMiddleware } from "../security.middleware";
+import { rateLimitMiddleware, authRateLimitMiddleware, startRateLimitCleanup } from "../security.middleware";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -152,6 +153,13 @@ async function startServer() {
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+  // Rate limiting — applied to /api/trpc only (Stripe webhook is already
+  // authenticated by signature and shouldn't be throttled).
+  // - rateLimitMiddleware: 100 req/min per IP, general API protection
+  // - authRateLimitMiddleware: 5 req / 15 min per IP, auth endpoints only
+  app.use("/api/trpc", rateLimitMiddleware(100, 60 * 1000));
+  app.use("/api/trpc", authRateLimitMiddleware());
+
   // tRPC API
   app.use(
     "/api/trpc",
@@ -177,6 +185,9 @@ async function startServer() {
   server.listen(port, () => {
     console.log(`Server running on http://localhost:${port}/`);
   });
+
+  // Periodic cleanup of expired rate-limit entries to keep memory bounded.
+  startRateLimitCleanup();
 
   // Initialize scheduler for background jobs (daily emails, cleanup, etc.)
   try {
