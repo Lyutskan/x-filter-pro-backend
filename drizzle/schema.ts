@@ -84,6 +84,55 @@ export const emailVerificationTokens = mysqlTable("email_verification_tokens", {
 
 export type EmailVerificationToken = typeof emailVerificationTokens.$inferSelect;
 
+/**
+ * Auth sessions — one row per login.
+ *
+ * Why stateful?
+ * Pure JWT can't be revoked. Customers occasionally need to:
+ *   - log out a forgotten/lost device
+ *   - kill all sessions after a password change
+ *   - see "where am I logged in"
+ * A session row gives us those capabilities at the cost of one DB lookup
+ * per authenticated request (tiny, ~1ms).
+ *
+ * The session id is embedded in the JWT as the standard `jti` claim.
+ * On every authenticated request we verify the JWT signature AND look up
+ * the session — if it's missing or revoked, we treat it as logged out.
+ *
+ * Token lifetime: 30 days, same as the JWT. Sessions self-expire so we
+ * don't accumulate dead rows forever. The scheduler purges them daily.
+ */
+export const authSessions = mysqlTable("auth_sessions", {
+  id: int("id").autoincrement().primaryKey(),
+  userId: int("userId").notNull(),
+  /**
+   * The session id (`sid`) — random 32-byte hex.
+   * This is what's embedded in the JWT as the `sid` claim and looked up here.
+   */
+  sid: varchar("sid", { length: 128 }).notNull().unique(),
+  /**
+   * Best-effort device fingerprint built from user-agent + first-seen IP.
+   * E.g. "Chrome on macOS · 95.123.45.67". Never used for security — pure UX.
+   */
+  deviceLabel: varchar("deviceLabel", { length: 200 }),
+  ip: varchar("ip", { length: 64 }),
+  userAgent: varchar("userAgent", { length: 500 }),
+  /**
+   * Updated on every request via the auth context. Used to show
+   * "last active 2 minutes ago" on the sessions page.
+   */
+  lastActiveAt: timestamp("lastActiveAt").defaultNow().notNull(),
+  expiresAt: timestamp("expiresAt").notNull(),
+  /**
+   * Null while active. Set to current timestamp when revoked (logout,
+   * password change, manual revoke from /account).
+   */
+  revokedAt: timestamp("revokedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type AuthSession = typeof authSessions.$inferSelect;
+
 
 /**
  * Pro Plan ve Subscription Yönetimi
