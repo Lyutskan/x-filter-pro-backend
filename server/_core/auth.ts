@@ -69,10 +69,11 @@ export async function verifyPassword(
 export type JwtPayload = {
   sub: string; // user id (as string)
   email: string;
+  sid: string; // session id (UUID-like)
 };
 
 export async function signJwt(payload: JwtPayload): Promise<string> {
-  return new SignJWT({ email: payload.email })
+  return new SignJWT({ email: payload.email, sid: payload.sid })
     .setProtectedHeader({ alg: JWT_ALGORITHM })
     .setSubject(payload.sub)
     .setIssuedAt()
@@ -84,8 +85,16 @@ export async function verifyJwt(token: string): Promise<JwtPayload | null> {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, getJwtSecret());
-    if (!payload.sub || typeof payload.email !== "string") return null;
-    return { sub: payload.sub, email: payload.email };
+    if (
+      !payload.sub ||
+      typeof payload.email !== "string" ||
+      typeof payload.sid !== "string"
+    ) {
+      // Old-format token without sid — treat as invalid (forces re-login).
+      // After v2.1 deploy, all tokens will have sid.
+      return null;
+    }
+    return { sub: payload.sub, email: payload.email, sid: payload.sid };
   } catch {
     // Expired, malformed, or signature mismatch — all treated as "not authed".
     return null;

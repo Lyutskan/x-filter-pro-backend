@@ -2,12 +2,12 @@ import type { CreateExpressContextOptions } from "@trpc/server/adapters/express"
 import type { Request } from "express";
 import type { User } from "../../drizzle/schema";
 import { verifyJwt } from "./auth";
-import { getUserById } from "../db";
+import { getActiveAuthSession, getUserById, touchAuthSession } from "../db";
 
 export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
-  user: User | null;
+  user: (User & { sessionId?: string }) | null;
 };
 
 /**
@@ -40,23 +40,37 @@ function extractToken(req: Request): string | null {
 
 /**
  * Resolve the authenticated user (or null) for a tRPC request.
- * Authentication is optional at the context layer — protected procedures
- * enforce the user-is-present check via tRPC middleware in `_core/trpc.ts`.
+ *
+ * Auth flow:
+ *   1. Extract JWT
+ *   2. Verify signature + expiry
+ *   3. Check that the session referenced by `sid` is still active (not revoked)
+ *   4. Load the user row
+ *   5. Touch lastSeenAt for the session (fire-and-forget)
+ *
+ * If any step fails the user is treated as logged out and protected
+ * procedures will reject with UNAUTHORIZED.
  */
 export async function createContext(
   opts: CreateExpressContextOptions,
 ): Promise<TrpcContext> {
-  let user: User | null = null;
+  let user: TrpcContext["user"] = null;
 
   const token = extractToken(opts.req);
   if (token) {
     const payload = await verifyJwt(token);
-    if (payload?.sub) {
-      const userId = Number(payload.sub);
-      if (Number.isFinite(userId)) {
-        const dbUser = await getUserById(userId);
-        if (dbUser) {
-          user = dbUser as User;
+    if (payload?.sub && payload.sid) {
+      // Check session is still active in DB (revocation check)
+      const session = await getActiveAuthSession(payload.sid);
+      if (session) {
+        const userId = Number(payload.sub);
+        if (Number.isFinite(userId) && session.userId === userId) {
+          const dbUser = await getUserById(userId);
+          if (dbUser) {
+            user = { ...(dbUser as User), sessionId: payload.sid };
+            // Fire-and-forget; don't block the request
+            void touchAuthSession(payload.sid);
+          }
         }
       }
     }

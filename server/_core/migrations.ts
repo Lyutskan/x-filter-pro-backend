@@ -57,6 +57,27 @@ const MIGRATIONS: Migration[] = [
       `UPDATE users SET emailVerified = true WHERE emailVerified IS NULL OR emailVerified = false`,
     ],
   },
+  {
+    name: "0005_auth_sessions",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_sessions (
+        id INT AUTO_INCREMENT NOT NULL,
+        userId INT NOT NULL,
+        sid VARCHAR(128) NOT NULL,
+        deviceLabel VARCHAR(200) NULL,
+        ip VARCHAR(64) NULL,
+        userAgent VARCHAR(500) NULL,
+        lastActiveAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        expiresAt TIMESTAMP NOT NULL,
+        revokedAt TIMESTAMP NULL,
+        createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY auth_sessions_sid_unique (sid),
+        KEY auth_sessions_userId_idx (userId),
+        KEY auth_sessions_expiresAt_idx (expiresAt)
+      )`,
+    ],
+  },
   // Future migrations: append here. Never edit existing entries.
 ];
 
