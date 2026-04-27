@@ -6,7 +6,7 @@
  */
 
 import * as cron from "node-cron";
-import { getDb } from "./db";
+import { getDb, cleanupExpiredAuthSessions } from "./db";
 import { lt, eq } from "drizzle-orm";
 import { seenTweets, users } from "../drizzle/schema";
 import { generateDailySummaryEmail, sendEmail } from "./email.service";
@@ -38,7 +38,25 @@ export async function initializeScheduler(): Promise<void> {
     await cleanOldStats();
   });
 
-  scheduledJobs = [dailyEmailJob, cleanExpiredSnoozesJob, cleanOldStatsJob] as (cron.ScheduledTask | null)[];
+  // Her gün 03:00 UTC'de süresi dolmuş auth session'ları temizle.
+  // Sadece 7 günden fazla expired olanları siliyoruz — kullanıcı yine de
+  // "geçmişteki sessions" listesinde 7 gün boyunca görsün.
+  const cleanExpiredSessionsJob = cron.schedule("0 3 * * *", async () => {
+    console.log("[Scheduler] Cleaning up expired auth sessions...");
+    try {
+      const removed = await cleanupExpiredAuthSessions();
+      console.log(`[Scheduler] Removed ${removed} expired auth session(s).`);
+    } catch (err) {
+      console.error("[Scheduler] cleanupExpiredAuthSessions failed:", err);
+    }
+  });
+
+  scheduledJobs = [
+    dailyEmailJob,
+    cleanExpiredSnoozesJob,
+    cleanOldStatsJob,
+    cleanExpiredSessionsJob,
+  ] as (cron.ScheduledTask | null)[];
 
   console.log("[Scheduler] Scheduled jobs initialized successfully");
 }

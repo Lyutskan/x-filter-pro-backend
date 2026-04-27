@@ -28,6 +28,7 @@ import {
   verifyPassword,
 } from "./_core/auth";
 import {
+  createAuthSession,
   createEmailVerificationToken,
   createPasswordResetToken,
   createUserWithPassword,
@@ -38,8 +39,11 @@ import {
   getUserById,
   getValidEmailVerificationToken,
   getValidPasswordResetToken,
+  listActiveSessionsForUser,
   markEmailVerificationTokenUsed,
   markPasswordResetTokenUsed,
+  revokeAllSessionsForUser,
+  revokeAuthSession,
   setEmailVerified,
   touchLastSignedIn,
   updatePasswordHash,
@@ -81,17 +85,72 @@ type AuthResponse = {
   };
 };
 
+/**
+ * Build the response payload returned by signup/login.
+ * Creates a fresh auth_sessions row, encodes its sessionId in the JWT,
+ * and returns the token + user info. The session is what gives us
+ * server-side revocation power for an otherwise-stateless JWT.
+ */
 async function buildAuthResponse(
   userId: number,
   email: string,
   name: string | null,
   isPro: boolean,
+  req: { headers: { [k: string]: unknown }; ip?: string } | null,
 ): Promise<AuthResponse> {
-  const token = await signJwt({ sub: String(userId), email });
+  const sessionId = crypto.randomBytes(24).toString("hex"); // 48-char id
+  const deviceInfo = parseDeviceInfo(req?.headers["user-agent"] as string | undefined);
+  const ipAddress = extractClientIp(req);
+
+  await createAuthSession(sessionId, userId, deviceInfo, ipAddress);
+
+  const token = await signJwt({ sub: String(userId), email, sid: sessionId });
   return {
     token,
     user: { id: userId, email, name, isPro },
   };
+}
+
+/**
+ * Best-effort User-Agent parser. We don't pull in a heavy UA library;
+ * a coarse "browser on OS" string is enough for the sessions UI.
+ */
+function parseDeviceInfo(ua: string | undefined): string | null {
+  if (!ua) return null;
+  // Browser detection (rough but readable).
+  let browser = "Unknown browser";
+  if (ua.includes("Edg/")) browser = "Edge";
+  else if (ua.includes("OPR/") || ua.includes("Opera")) browser = "Opera";
+  else if (ua.includes("Chrome/")) browser = "Chrome";
+  else if (ua.includes("Firefox/")) browser = "Firefox";
+  else if (ua.includes("Safari/")) browser = "Safari";
+
+  // OS detection
+  let os = "Unknown OS";
+  if (ua.includes("Mac OS X")) os = "macOS";
+  else if (ua.includes("Windows NT")) os = "Windows";
+  else if (ua.includes("Linux")) os = "Linux";
+  else if (ua.includes("Android")) os = "Android";
+  else if (ua.includes("iPhone") || ua.includes("iPad")) os = "iOS";
+
+  return `${browser} on ${os}`.slice(0, 255);
+}
+
+/**
+ * Extract real client IP behind Cloudflare/Railway. Falls back to req.ip
+ * which Express derives from the socket. Returns null if all sources fail.
+ */
+function extractClientIp(req: { headers: { [k: string]: unknown }; ip?: string } | null): string | null {
+  if (!req) return null;
+  const cf = req.headers["cf-connecting-ip"];
+  if (typeof cf === "string" && cf.length > 0) return cf.slice(0, 64);
+
+  const fwd = req.headers["x-forwarded-for"];
+  if (typeof fwd === "string" && fwd.length > 0) {
+    return fwd.split(",")[0].trim().slice(0, 64);
+  }
+
+  return req.ip ? req.ip.slice(0, 64) : null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,7 +168,7 @@ export const authRouter = router({
    */
   signup: publicProcedure
     .input(signupInput)
-    .mutation(async ({ input }): Promise<AuthResponse> => {
+    .mutation(async ({ input, ctx }): Promise<AuthResponse> => {
       const email = normalizeEmail(input.email);
 
       if (!isValidEmail(email)) {
@@ -165,7 +224,7 @@ export const authRouter = router({
       // verification, but Pro upgrade is gated until verified.
       void sendVerificationEmail(user.id, user.email, input.name ?? null);
 
-      return buildAuthResponse(user.id, user.email, input.name ?? null, false);
+      return buildAuthResponse(user.id, user.email, input.name ?? null, false, ctx.req);
     }),
 
   /**
@@ -176,7 +235,7 @@ export const authRouter = router({
    */
   login: publicProcedure
     .input(loginInput)
-    .mutation(async ({ input }): Promise<AuthResponse> => {
+    .mutation(async ({ input, ctx }): Promise<AuthResponse> => {
       const email = normalizeEmail(input.email);
       const GENERIC_ERROR = "Invalid email or password.";
 
@@ -198,7 +257,7 @@ export const authRouter = router({
       // Best-effort timestamp update; don't block login if it fails.
       void touchLastSignedIn(user.id);
 
-      return buildAuthResponse(user.id, user.email, user.name ?? null, user.isPro);
+      return buildAuthResponse(user.id, user.email, user.name ?? null, user.isPro, ctx.req);
     }),
 
   /**
@@ -223,13 +282,16 @@ export const authRouter = router({
   }),
 
   /**
-   * Logout is a client-side concern with JWT (just delete the token).
-   * We expose this endpoint so the existing extension code that calls
-   * `auth.logout` continues to work without errors.
+   * Log out the current session.
+   * - Revokes the session row in DB so the JWT becomes invalid immediately
+   * - Client still needs to delete its local copy of the token
    *
-   * Future: if we add a revocation list, this is where we'd insert.
+   * If the JWT didn't carry a sessionId (legacy v2.0 token) this is a no-op.
    */
-  logout: protectedProcedure.mutation(async () => {
+  logout: protectedProcedure.mutation(async ({ ctx }) => {
+    if (ctx.user.sessionId) {
+      await revokeAuthSession(ctx.user.sessionId);
+    }
     return { success: true };
   }),
 
@@ -258,6 +320,17 @@ export const authRouter = router({
 
       const newHash = await hashPassword(input.newPassword);
       await updatePasswordHash(fresh.id, newHash);
+
+      // Security: a password change should invalidate every other active
+      // session, but keep THIS one alive so the user doesn't get logged out
+      // from the device they're sitting at.
+      if (ctx.user.sessionId) {
+        await revokeAllSessionsForUser(fresh.id, ctx.user.sessionId);
+      } else {
+        // No sessionId on JWT (legacy token). Revoke everything to be safe.
+        await revokeAllSessionsForUser(fresh.id);
+      }
+
       return { success: true };
     }),
 
@@ -346,6 +419,11 @@ export const authRouter = router({
       await markPasswordResetTokenUsed(input.token);
       await deleteAllPasswordResetTokensForUser(tokenRow.userId);
 
+      // Password was reset (likely by someone who got locked out) — kick all
+      // existing sessions out. The user will need to log in again with the
+      // new password on every device.
+      await revokeAllSessionsForUser(tokenRow.userId);
+
       return { success: true };
     }),
 
@@ -386,6 +464,59 @@ export const authRouter = router({
     }
 
     await sendVerificationEmail(fresh.id, fresh.email, fresh.name ?? null);
+    return { success: true };
+  }),
+
+  // ─── Session management ──────────────────────────────────────────────────
+
+  /**
+   * List all currently-active sessions for the logged-in user.
+   * The `current: true` flag marks the session this request itself came from
+   * so the UI can label it differently and disable the "revoke" button.
+   */
+  listSessions: protectedProcedure.query(async ({ ctx }) => {
+    const sessions = await listActiveSessionsForUser(ctx.user.id);
+    return sessions.map((s) => ({
+      sessionId: s.sid,
+      deviceInfo: s.deviceLabel,
+      ipAddress: s.ip,
+      createdAt: s.createdAt,
+      lastSeenAt: s.lastActiveAt,
+      current: s.sid === ctx.user.sessionId,
+    }));
+  }),
+
+  /**
+   * Revoke one specific session by ID.
+   * Owner check: we only revoke sessions that belong to the requesting user.
+   */
+  revokeSession: protectedProcedure
+    .input(z.object({ sessionId: z.string().min(8).max(128) }))
+    .mutation(async ({ ctx, input }) => {
+      const sessions = await listActiveSessionsForUser(ctx.user.id);
+      const owns = sessions.some((s) => s.sid === input.sessionId);
+      if (!owns) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Session not found.",
+        });
+      }
+      await revokeAuthSession(input.sessionId);
+      return { success: true };
+    }),
+
+  /**
+   * Revoke every active session for the user EXCEPT the one making the request.
+   * "Sign out of all other devices."
+   */
+  revokeAllOtherSessions: protectedProcedure.mutation(async ({ ctx }) => {
+    if (!ctx.user.sessionId) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "Current session ID is missing.",
+      });
+    }
+    await revokeAllSessionsForUser(ctx.user.id, ctx.user.sessionId);
     return { success: true };
   }),
 });

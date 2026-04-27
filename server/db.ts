@@ -1,4 +1,4 @@
-import { eq, and, gt, gte, lte, desc, asc } from "drizzle-orm";
+import { eq, and, gt, gte, lte, lt, desc, asc, or, isNull, isNotNull, ne } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
 import {
   users,
@@ -11,6 +11,7 @@ import {
   deviceSessions,
   passwordResetTokens,
   emailVerificationTokens,
+  authSessions,
   type Subscription,
   type SeenTweet,
   type DailyStat,
@@ -18,6 +19,7 @@ import {
   type MutedAccount,
   type AiUsageLog,
   type DeviceSession,
+  type AuthSession,
 } from "../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -731,4 +733,160 @@ export async function setEmailVerified(userId: number): Promise<void> {
     .update(users)
     .set({ emailVerified: true })
     .where(eq(users.id, userId));
+}
+
+// ========== Auth Sessions (v2.1+) ==========
+
+//
+// Stateful session tracking. Every login creates a row here; logout/password-
+// reset/manual-revoke marks `revokedAt`. The auth context checks the session
+// on every authenticated request.
+
+/**
+ * Create a new session row at login time.
+ * `sid` is caller-generated (random 32-byte hex), embedded in the JWT.
+ */
+export async function createAuthSession(
+  sid: string,
+  userId: number,
+  deviceInfo: string | null,
+  ipAddress: string | null,
+  userAgent: string | null = null,
+  expiresInMs: number = 30 * 24 * 60 * 60 * 1000, // 30 days, must match JWT TTL
+): Promise<void> {
+  const db = await getDb();
+  if (!db) throw new Error("Database not available");
+  await db.insert(authSessions).values({
+    userId,
+    sid,
+    deviceLabel: deviceInfo,
+    ip: ipAddress,
+    userAgent,
+    expiresAt: new Date(Date.now() + expiresInMs),
+  });
+}
+
+/**
+ * Look up an active (non-revoked, non-expired) session by `sid`.
+ * Returns null if not found, revoked, or expired.
+ */
+export async function getActiveAuthSession(sid: string): Promise<AuthSession | null> {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(authSessions)
+    .where(eq(authSessions.sid, sid))
+    .limit(1);
+  if (rows.length === 0) return null;
+  const row = rows[0];
+  if (row.revokedAt) return null;
+  if (row.expiresAt.getTime() < Date.now()) return null;
+  return row;
+}
+
+/**
+ * Update lastActiveAt to now. Best-effort; failure is logged but not
+ * propagated. Called from auth context on every authenticated request.
+ */
+export async function touchAuthSession(sid: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db
+      .update(authSessions)
+      .set({ lastActiveAt: new Date() })
+      .where(eq(authSessions.sid, sid));
+  } catch (err) {
+    console.warn("[Database] touchAuthSession failed:", err);
+  }
+}
+
+/**
+ * List all sessions for a user (active + revoked, newest first).
+ * Caller filters/marks the current session in the UI.
+ */
+export async function listActiveSessionsForUser(userId: number): Promise<AuthSession[]> {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select()
+    .from(authSessions)
+    .where(
+      and(
+        eq(authSessions.userId, userId),
+        isNull(authSessions.revokedAt),
+        gt(authSessions.expiresAt, new Date()),
+      ),
+    )
+    .orderBy(desc(authSessions.lastActiveAt))
+    .limit(50);
+}
+
+/**
+ * Mark a single session as revoked. Idempotent.
+ */
+export async function revokeAuthSession(sid: string): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db
+      .update(authSessions)
+      .set({ revokedAt: new Date() })
+      .where(
+        and(
+          eq(authSessions.sid, sid),
+          isNull(authSessions.revokedAt),
+        ),
+      );
+  } catch (err) {
+    console.warn("[Database] revokeAuthSession failed:", err);
+  }
+}
+
+/**
+ * Revoke all active sessions for a user EXCEPT the one matching `exceptSid`.
+ * Used by "Log out other devices" and after password change.
+ * Pass undefined for `exceptSid` to log out everywhere.
+ */
+export async function revokeAllSessionsForUser(
+  userId: number,
+  exceptSid?: string | null,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    const conditions = [
+      eq(authSessions.userId, userId),
+      isNull(authSessions.revokedAt),
+    ];
+    if (exceptSid) {
+      conditions.push(ne(authSessions.sid, exceptSid));
+    }
+    await db
+      .update(authSessions)
+      .set({ revokedAt: new Date() })
+      .where(and(...conditions));
+  } catch (err) {
+    console.warn("[Database] revokeAllSessionsForUser failed:", err);
+  }
+}
+
+/**
+ * Delete sessions that expired more than 7 days ago. Called periodically
+ * by the scheduler so the table doesn't grow forever.
+ */
+export async function cleanupExpiredAuthSessions(): Promise<number> {
+  const db = await getDb();
+  if (!db) return 0;
+  const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  try {
+    const result = await db
+      .delete(authSessions)
+      .where(lt(authSessions.expiresAt, cutoff));
+    return (result as unknown as { affectedRows?: number }).affectedRows ?? 0;
+  } catch (err) {
+    console.warn("[Database] cleanupExpiredAuthSessions failed:", err);
+    return 0;
+  }
 }
