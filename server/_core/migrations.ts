@@ -78,6 +78,14 @@ const MIGRATIONS: Migration[] = [
       )`,
     ],
   },
+  {
+    name: "0006_grant_admin_role",
+    statements: [
+      // Grant admin role to the project owner so the /admin dashboard works.
+      // Idempotent: re-running just keeps the role at admin.
+      `UPDATE users SET role = 'admin' WHERE email = 'lyutskangradinarov@gmail.com'`,
+    ],
+  },
   // Future migrations: append here. Never edit existing entries.
 ];
 
