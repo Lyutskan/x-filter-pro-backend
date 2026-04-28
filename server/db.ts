@@ -970,10 +970,10 @@ export async function getAdminKpis(): Promise<AdminKpis> {
     count(sql`SELECT COUNT(*) AS c FROM users WHERE createdAt >= ${thirtyDaysAgo}`),
     count(sql`SELECT COUNT(*) AS c FROM auth_sessions WHERE revokedAt IS NULL AND expiresAt > NOW()`),
     count(sql`SELECT COUNT(DISTINCT userId) AS c FROM auth_sessions WHERE revokedAt IS NULL AND lastActiveAt >= ${fiveMinutesAgo}`),
-    count(sql`SELECT COUNT(*) AS c FROM ai_usage_log WHERE createdAt >= ${startOfDay}`),
-    count(sql`SELECT COUNT(*) AS c FROM ai_usage_log`),
+    count(sql`SELECT COUNT(*) AS c FROM aiUsageLog WHERE createdAt >= ${startOfDay}`),
+    count(sql`SELECT COUNT(*) AS c FROM aiUsageLog`),
     // Daily stats stores per-user-per-day counts; sum over all
-    count(sql`SELECT COALESCE(SUM(hiddenCount), 0) AS c FROM daily_stats`),
+    count(sql`SELECT COALESCE(SUM(hiddenCount), 0) AS c FROM dailyStats`),
     // MRR: count active subscriptions by plan
     // We don't currently store the plan type per-subscription in the DB.
     // For MRR estimation we conservatively assume all active subs are monthly.
@@ -1035,7 +1035,7 @@ export async function getAiUsageByDay(days: number = 30): Promise<Array<{ date: 
 
   const rows = await db.execute(sql`
     SELECT DATE(createdAt) AS day, COUNT(*) AS c
-    FROM ai_usage_log
+    FROM aiUsageLog
     WHERE createdAt >= ${since}
     GROUP BY DATE(createdAt)
     ORDER BY day ASC
