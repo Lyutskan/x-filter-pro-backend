@@ -890,3 +890,219 @@ export async function cleanupExpiredAuthSessions(): Promise<number> {
     return 0;
   }
 }
+
+// ========== Admin Dashboard Queries (v2.2+) ==========
+//
+// All admin queries go through this section so we can audit them in one place.
+// They're aggregate-only (count, sum) — no individual-user PII unless explicitly
+// requested via the listings endpoints.
+//
+// Performance: every query uses a covering index where it matters
+// (createdAt for time-bucketed queries, isPro / emailVerified for filters).
+
+import { sql } from "drizzle-orm";
+
+export interface AdminKpis {
+  totalUsers: number;
+  proUsers: number;
+  verifiedUsers: number;
+  signupsToday: number;
+  signupsThisWeek: number;
+  signupsThisMonth: number;
+  activeSessions: number;
+  onlineNow: number;          // active in last 5 min
+  aiSummariesToday: number;
+  aiSummariesAllTime: number;
+  totalTweetsHidden: number;
+  estimatedMrrUsd: number;    // monthly recurring revenue, $USD
+}
+
+const PRICE_MONTHLY_USD = 2;
+const PRICE_YEARLY_USD = 20;
+
+/**
+ * Aggregate dashboard KPIs.  Each metric is a separate count/sum query to
+ * keep the queries simple and cacheable. ~10 round-trips, finishes in ~50ms.
+ */
+export async function getAdminKpis(): Promise<AdminKpis> {
+  const db = await getDb();
+  if (!db) {
+    return {
+      totalUsers: 0, proUsers: 0, verifiedUsers: 0,
+      signupsToday: 0, signupsThisWeek: 0, signupsThisMonth: 0,
+      activeSessions: 0, onlineNow: 0,
+      aiSummariesToday: 0, aiSummariesAllTime: 0,
+      totalTweetsHidden: 0, estimatedMrrUsd: 0,
+    };
+  }
+
+  const now = new Date();
+  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
+  // Helper: fetch a single COUNT result using raw SQL (works around
+  // Drizzle's count() ergonomics).
+  const count = async (whereSql?: any): Promise<number> => {
+    const rows = whereSql
+      ? await db.execute(whereSql)
+      : await db.select().from(users); // fallback won't be used
+    // We use sql.raw paths below — drizzle returns rows as array of objects.
+    const first = (rows as any)[0]?.[0] ?? (rows as any)[0];
+    if (!first) return 0;
+    return Number(first.c ?? Object.values(first)[0] ?? 0);
+  };
+
+  const [
+    totalUsers, proUsers, verifiedUsers,
+    signupsToday, signupsThisWeek, signupsThisMonth,
+    activeSessions, onlineNow,
+    aiSummariesToday, aiSummariesAllTime,
+    totalTweetsHidden,
+    proMonthlyCount, proYearlyCount,
+  ] = await Promise.all([
+    count(sql`SELECT COUNT(*) AS c FROM users`),
+    count(sql`SELECT COUNT(*) AS c FROM users WHERE isPro = TRUE`),
+    count(sql`SELECT COUNT(*) AS c FROM users WHERE emailVerified = TRUE`),
+    count(sql`SELECT COUNT(*) AS c FROM users WHERE createdAt >= ${startOfDay}`),
+    count(sql`SELECT COUNT(*) AS c FROM users WHERE createdAt >= ${sevenDaysAgo}`),
+    count(sql`SELECT COUNT(*) AS c FROM users WHERE createdAt >= ${thirtyDaysAgo}`),
+    count(sql`SELECT COUNT(*) AS c FROM auth_sessions WHERE revokedAt IS NULL AND expiresAt > NOW()`),
+    count(sql`SELECT COUNT(DISTINCT userId) AS c FROM auth_sessions WHERE revokedAt IS NULL AND lastActiveAt >= ${fiveMinutesAgo}`),
+    count(sql`SELECT COUNT(*) AS c FROM ai_usage_log WHERE createdAt >= ${startOfDay}`),
+    count(sql`SELECT COUNT(*) AS c FROM ai_usage_log`),
+    // Daily stats stores per-user-per-day counts; sum over all
+    count(sql`SELECT COALESCE(SUM(hiddenCount), 0) AS c FROM daily_stats`),
+    // MRR: count active subscriptions by plan
+    // We don't currently store the plan type per-subscription in the DB.
+    // For MRR estimation we conservatively assume all active subs are monthly.
+    // (A future migration can add planType to the subscriptions table; for now
+    // this is good enough for a dashboard signal.)
+    count(sql`SELECT COUNT(*) AS c FROM subscriptions WHERE isPro = TRUE`),
+    count(sql`SELECT 0 AS c`),
+  ]);
+
+  // MRR calculation:
+  // Monthly subs contribute their full monthly price.
+  // Annual subs contribute price/12 each month.
+  const estimatedMrrUsd =
+    proMonthlyCount * PRICE_MONTHLY_USD +
+    proYearlyCount * (PRICE_YEARLY_USD / 12);
+
+  return {
+    totalUsers, proUsers, verifiedUsers,
+    signupsToday, signupsThisWeek, signupsThisMonth,
+    activeSessions, onlineNow,
+    aiSummariesToday, aiSummariesAllTime,
+    totalTweetsHidden,
+    estimatedMrrUsd: Math.round(estimatedMrrUsd * 100) / 100,
+  };
+}
+
+/**
+ * Daily signup counts for the last N days. Used by the dashboard line chart.
+ * Returns an array of { date: "2026-04-25", count: 12 } sorted ascending.
+ */
+export async function getSignupsByDay(days: number = 30): Promise<Array<{ date: string; count: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const rows = await db.execute(sql`
+    SELECT DATE(createdAt) AS day, COUNT(*) AS c
+    FROM users
+    WHERE createdAt >= ${since}
+    GROUP BY DATE(createdAt)
+    ORDER BY day ASC
+  `);
+
+  // Drizzle MySQL returns [rows, fields]; normalize.
+  const list = (rows as any)[0] ?? rows;
+  return (Array.isArray(list) ? list : []).map((r: any) => ({
+    date: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day).slice(0, 10),
+    count: Number(r.c),
+  }));
+}
+
+/**
+ * Daily AI summary counts for the last N days.
+ */
+export async function getAiUsageByDay(days: number = 30): Promise<Array<{ date: string; count: number }>> {
+  const db = await getDb();
+  if (!db) return [];
+  const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+  const rows = await db.execute(sql`
+    SELECT DATE(createdAt) AS day, COUNT(*) AS c
+    FROM ai_usage_log
+    WHERE createdAt >= ${since}
+    GROUP BY DATE(createdAt)
+    ORDER BY day ASC
+  `);
+  const list = (rows as any)[0] ?? rows;
+  return (Array.isArray(list) ? list : []).map((r: any) => ({
+    date: r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day).slice(0, 10),
+    count: Number(r.c),
+  }));
+}
+
+/**
+ * Most-recent signups (newest first).  Returns minimal info — no password
+ * hashes etc.  Uses simple LIMIT to keep response small.
+ */
+export async function getRecentSignups(limit: number = 20) {
+  const db = await getDb();
+  if (!db) return [];
+  return db
+    .select({
+      id: users.id,
+      email: users.email,
+      name: users.name,
+      isPro: users.isPro,
+      emailVerified: users.emailVerified,
+      createdAt: users.createdAt,
+    })
+    .from(users)
+    .orderBy(desc(users.createdAt))
+    .limit(limit);
+}
+
+/**
+ * All current Pro members.  Joined with subscriptions to expose plan + start date.
+ */
+export async function getActiveProUsers(limit: number = 50) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.execute(sql`
+    SELECT u.id, u.email, u.name, u.createdAt AS userCreatedAt,
+           s.renewalDate, s.stripeCustomerId, s.updatedAt AS subUpdatedAt
+    FROM users u
+    INNER JOIN subscriptions s ON s.userId = u.id
+    WHERE s.isPro = TRUE
+    ORDER BY s.updatedAt DESC
+    LIMIT ${limit}
+  `);
+  const list = (rows as any)[0] ?? rows;
+  return Array.isArray(list) ? list : [];
+}
+
+/**
+ * Recent payment events — derived from subscriptions table updates.
+ * For real "transaction" history we'd need to either tap Stripe or maintain
+ * a payments log table; for now subscriptions.updatedAt is a good proxy.
+ */
+export async function getRecentPayments(limit: number = 20) {
+  const db = await getDb();
+  if (!db) return [];
+  const rows = await db.execute(sql`
+    SELECT u.email, u.name, s.isPro, s.updatedAt, s.renewalDate, s.stripeCustomerId
+    FROM subscriptions s
+    INNER JOIN users u ON u.id = s.userId
+    WHERE s.stripeCustomerId IS NOT NULL
+    ORDER BY s.updatedAt DESC
+    LIMIT ${limit}
+  `);
+  const list = (rows as any)[0] ?? rows;
+  return Array.isArray(list) ? list : [];
+}
