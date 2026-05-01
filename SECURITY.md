@@ -2,7 +2,7 @@
 
 ## Genel Bakış
 
-X Feed Filter Pro, **50 yıllık yazılım mühendisliği standartları** ile tasarlanmış, **kırılamaz** bir backend API sistemidir. Tüm güvenlik kontrolleri sunucu tarafında yapılır ve istemci tarafından bypass edilemez.
+X Feed Filter Pro, **20 yıllık yazılım mühendisliği standartları** ile tasarlanmış, **kırılamaz** bir backend API sistemidir. Tüm güvenlik kontrolleri sunucu tarafında yapılır ve istemci tarafından bypass edilemez.
 
 ---
 
@@ -336,5 +336,5 @@ Güvenlik açığı bulunması durumunda: security@xfilterpro.com
 ---
 
 **Tasarım Tarihi:** 10 Mart 2026  
-**Mühendis:** 50+ Yıllık Yazılım Mimarı  
+**Mühendis:** 20+ Yıllık Yazılım Mimarı  
 **Standart:** Enterprise-Grade Security
