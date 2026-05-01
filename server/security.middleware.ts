@@ -66,7 +66,7 @@ export function corsMiddleware(req: Request, res: Response, next: NextFunction) 
   // browser sees a clear response (the missing CORS headers will then make
   // it block the actual request — that's the correct behaviour).
   if (req.method === "OPTIONS") {
-    res.sendStatus(204);
+    res.sendStatus(200);
     return;
   }
 
