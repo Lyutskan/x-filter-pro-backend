@@ -292,6 +292,17 @@ export const authRouter = router({
     if (ctx.user.sessionId) {
       await revokeAuthSession(ctx.user.sessionId);
     }
+
+    // Clear the session cookie for browser-based flows
+    const { COOKIE_NAME } = await import("../shared/const");
+    ctx.res.clearCookie(COOKIE_NAME, {
+      maxAge: -1,
+      path: "/",
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+    });
+
     return { success: true };
   }),
 
