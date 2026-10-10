@@ -1,26 +1,6 @@
-import { eq, and, gt, gte, lte, lt, desc, asc, or, isNull, isNotNull, ne } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNotNull, isNull, lt, lte, ne, or } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import {
-  users,
-  subscriptions,
-  seenTweets,
-  dailyStats,
-  filterRules,
-  mutedAccounts,
-  aiUsageLog,
-  deviceSessions,
-  passwordResetTokens,
-  emailVerificationTokens,
-  authSessions,
-  type Subscription,
-  type SeenTweet,
-  type DailyStat,
-  type FilterRule,
-  type MutedAccount,
-  type AiUsageLog,
-  type DeviceSession,
-  type AuthSession,
-} from "../drizzle/schema";
+import { aiUsageLog, authSessions, dailyStats, deviceSessions, emailVerificationTokens, filterRules, mutedAccounts, passwordResetTokens, seenTweets, subscriptions, type AiUsageLog, type AuthSession, type DailyStat, type DeviceSession, type FilterRule, type MutedAccount, type SeenTweet, type Subscription, userSyncState, users, anonymousStats, recentInstalls, publicMetricsCache} from "../drizzle/schema";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -746,6 +726,49 @@ export async function setEmailVerified(userId: number): Promise<void> {
  * Create a new session row at login time.
  * `sid` is caller-generated (random 32-byte hex), embedded in the JWT.
  */
+/**
+ * Enforces a maximum number of concurrent active sessions per user.
+ * Free plan: 1 session. Pro plan: 2 sessions (Netflix-style).
+ *
+ * When the limit is reached, the oldest session(s) (by lastActiveAt) are
+ * soft-revoked via revokedAt = NOW(). The new login then proceeds normally,
+ * leaving the user with exactly `limit` active sessions.
+ *
+ * Soft delete preserves audit trail in the database.
+ */
+export async function enforceDeviceLimit(
+  userId: number,
+  isPro: boolean,
+): Promise<{ revoked: number }> {
+  const db = await getDb();
+  if (!db) return { revoked: 0 };
+
+  const limit = isPro ? 2 : 1;
+
+  const active = await db
+    .select({ id: authSessions.id })
+    .from(authSessions)
+    .where(
+      and(
+        eq(authSessions.userId, userId),
+        isNull(authSessions.revokedAt),
+        gt(authSessions.expiresAt, new Date()),
+      ),
+    )
+    .orderBy(asc(authSessions.lastActiveAt));
+
+  const toRevokeCount = active.length - (limit - 1);
+  if (toRevokeCount <= 0) return { revoked: 0 };
+
+  const idsToRevoke = active.slice(0, toRevokeCount).map((s) => s.id);
+  await db
+    .update(authSessions)
+    .set({ revokedAt: new Date() })
+    .where(inArray(authSessions.id, idsToRevoke));
+
+  return { revoked: idsToRevoke.length };
+}
+
 export async function createAuthSession(
   sid: string,
   userId: number,
@@ -940,7 +963,7 @@ export async function getAdminKpis(): Promise<AdminKpis> {
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
   const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-  const fiveMinutesAgo = new Date(now.getTime() - 5 * 60 * 1000);
+  const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
 
   // Helper: fetch a single COUNT result using raw SQL (works around
   // Drizzle's count() ergonomics).
@@ -969,7 +992,7 @@ export async function getAdminKpis(): Promise<AdminKpis> {
     count(sql`SELECT COUNT(*) AS c FROM users WHERE createdAt >= ${sevenDaysAgo}`),
     count(sql`SELECT COUNT(*) AS c FROM users WHERE createdAt >= ${thirtyDaysAgo}`),
     count(sql`SELECT COUNT(*) AS c FROM auth_sessions WHERE revokedAt IS NULL AND expiresAt > NOW()`),
-    count(sql`SELECT COUNT(DISTINCT userId) AS c FROM auth_sessions WHERE revokedAt IS NULL AND lastActiveAt >= ${fiveMinutesAgo}`),
+    count(sql`SELECT COUNT(DISTINCT userId) AS c FROM auth_sessions WHERE revokedAt IS NULL AND lastActiveAt >= ${oneHourAgo}`),
     count(sql`SELECT COUNT(*) AS c FROM aiUsageLog WHERE createdAt >= ${startOfDay}`),
     count(sql`SELECT COUNT(*) AS c FROM aiUsageLog`),
     // Daily stats stores per-user-per-day counts; sum over all
@@ -1105,4 +1128,213 @@ export async function getRecentPayments(limit: number = 20) {
   `);
   const list = (rows as any)[0] ?? rows;
   return Array.isArray(list) ? list : [];
+}
+
+/**
+ * Cloud Sync — Get user's last synced state.
+ */
+export async function getUserSyncState(userId: number) {
+  const db = await getDb();
+  if (!db) return null;
+  const rows = await db
+    .select()
+    .from(userSyncState)
+    .where(eq(userSyncState.userId, userId))
+    .limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * Cloud Sync — Insert or update user's state.
+ * Drizzle MySQL upsert via onDuplicateKeyUpdate.
+ */
+export async function upsertUserSyncState(
+  userId: number,
+  data: {
+    seenCountTotal?: number;
+    mutedAccounts?: string | null;
+    filterRules?: string | null;
+    toggleSettings?: string | null;
+  },
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const now = new Date();
+  const existing = await db
+    .select({ userId: userSyncState.userId })
+    .from(userSyncState)
+    .where(eq(userSyncState.userId, userId))
+    .limit(1);
+  if (existing.length === 0) {
+    await db.insert(userSyncState).values({
+      userId,
+      seenCountTotal: data.seenCountTotal ?? 0,
+      mutedAccounts: data.mutedAccounts ?? null,
+      filterRules: data.filterRules ?? null,
+      toggleSettings: data.toggleSettings ?? null,
+      lastSyncedAt: now,
+    });
+  } else {
+    const upd: Record<string, unknown> = { lastSyncedAt: now };
+    if (data.seenCountTotal !== undefined) upd.seenCountTotal = data.seenCountTotal;
+    if (data.mutedAccounts !== undefined) upd.mutedAccounts = data.mutedAccounts;
+    if (data.filterRules !== undefined) upd.filterRules = data.filterRules;
+    if (data.toggleSettings !== undefined) upd.toggleSettings = data.toggleSettings;
+    await db
+      .update(userSyncState)
+      .set(upd)
+      .where(eq(userSyncState.userId, userId));
+  }
+}
+
+// ════════════════════════════════════════════════════════
+// Stats: public aggregate metrics (Phase 1)
+// ════════════════════════════════════════════════════════
+
+/**
+ * Increment anonymous stats for a given IP-hash + date.
+ * Uses INSERT ... ON DUPLICATE KEY UPDATE for atomic accumulation.
+ */
+export async function upsertAnonymousStat(
+  ipHash: string,
+  date: string,
+  countryCode: string | null,
+  hiddenIncrement: number,
+  linkIncrement: number,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+
+  await db.execute(sql`
+    INSERT INTO anonymousStats (ipHash, date, countryCode, hiddenCount, linkCount)
+    VALUES (${ipHash}, ${date}, ${countryCode}, ${hiddenIncrement}, ${linkIncrement})
+    ON DUPLICATE KEY UPDATE
+      hiddenCount = LEAST(hiddenCount + ${hiddenIncrement}, 100000),
+      linkCount = LEAST(linkCount + ${linkIncrement}, 100000),
+      countryCode = COALESCE(countryCode, ${countryCode})
+  `);
+}
+
+/**
+ * Compute aggregate metrics for the public trust widget.
+ * Combines authenticated dailyStats with anonymous stats.
+ * Returns { adsBlockedToday, linksHiddenThisWeek, activeCountries, totalHoursSaved, avgHoursSavedPerUserPerWeek, recentCities, updatedAt }
+ */
+export async function computePublicAggregate() {
+  const db = await getDb();
+  const empty = {
+    adsBlockedToday: 0,
+    linksHiddenThisWeek: 0,
+    activeCountries: 0,
+    totalHoursSaved: 0,
+    avgHoursSavedPerUserPerWeek: 0,
+    recentCities: [] as string[],
+    updatedAt: new Date().toISOString(),
+  };
+  if (!db) return empty;
+
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const weekAgo = new Date(now.getTime() - 7 * 86400_000).toISOString().slice(0, 10);
+  const monthAgo = new Date(now.getTime() - 30 * 86400_000).toISOString().slice(0, 10);
+
+  try {
+    const [authToday, anonToday, anonLinksWeek, countriesMonth, totalHours, weeklyAvg, citiesRows] = await Promise.all([
+      db.execute(sql`SELECT COALESCE(SUM(hiddenCount), 0) AS c FROM dailyStats WHERE date = ${today}`),
+      db.execute(sql`SELECT COALESCE(SUM(hiddenCount), 0) AS c FROM anonymousStats WHERE date = ${today}`),
+      db.execute(sql`SELECT COALESCE(SUM(linkCount), 0) AS c FROM anonymousStats WHERE date >= ${weekAgo}`),
+      db.execute(sql`SELECT COUNT(DISTINCT countryCode) AS c FROM anonymousStats WHERE date >= ${monthAgo} AND countryCode IS NOT NULL`),
+      db.execute(sql`SELECT (COALESCE((SELECT SUM(estimatedTimeSaved) FROM dailyStats), 0) + COALESCE((SELECT SUM(hiddenCount) * 3 FROM anonymousStats), 0)) / 3600 AS c`),
+      db.execute(sql`
+        SELECT COALESCE(AVG(weekly_total), 0) / 3600 AS c FROM (
+          SELECT userId, SUM(estimatedTimeSaved) AS weekly_total
+          FROM dailyStats WHERE date >= ${weekAgo}
+          GROUP BY userId
+        ) AS per_user
+      `),
+      db.execute(sql`
+        SELECT city FROM recentInstalls
+        WHERE installedAt > NOW() - INTERVAL 7 DAY AND city IS NOT NULL
+        ORDER BY installedAt DESC LIMIT 10
+      `),
+    ]);
+
+    const num = (result: unknown): number => {
+      try {
+        // Drizzle MySQL execute returns [rows, fields] tuple
+        const arr = Array.isArray(result) ? result : [];
+        const rows = Array.isArray(arr[0]) ? arr[0] : arr;
+        const firstRow = rows[0] as Record<string, unknown> | undefined;
+        if (!firstRow) return 0;
+        const val = firstRow.c ?? firstRow.total ?? Object.values(firstRow)[0] ?? 0;
+        return typeof val === "string" ? parseFloat(val) : Number(val) || 0;
+      } catch {
+        return 0;
+      }
+    };
+
+    const cities = (() => {
+      try {
+        // Drizzle MySQL: [rows, fields] tuple
+        const arr = Array.isArray(citiesRows) ? citiesRows : [];
+        const rows = Array.isArray(arr[0]) ? arr[0] : arr;
+        return (rows as Array<{ city: string | null }>)
+          .map((x) => x?.city)
+          .filter((c): c is string => typeof c === "string" && c.length > 0);
+      } catch {
+        return [];
+      }
+    })();
+
+    return {
+      adsBlockedToday: num(authToday) + num(anonToday),
+      linksHiddenThisWeek: num(anonLinksWeek),
+      activeCountries: num(countriesMonth),
+      totalHoursSaved: Math.round(num(totalHours) * 10) / 10,
+      avgHoursSavedPerUserPerWeek: Math.round(num(weeklyAvg) * 10) / 10,
+      recentCities: cities,
+      updatedAt: now.toISOString(),
+    };
+  } catch (err) {
+    console.error("[db] computePublicAggregate failed:", err);
+    return empty;
+  }
+}
+
+/**
+ * Add a city-level recent install entry. Called from auth.signup (best-effort).
+ */
+export async function addRecentInstall(
+  city: string | null,
+  countryCode: string | null,
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  try {
+    await db.insert(recentInstalls).values({ city, countryCode });
+  } catch (err) {
+    console.error("[db] addRecentInstall failed:", err);
+  }
+}
+
+/**
+ * Upsert a dailyStat row: get-or-create, then overwrite counts.
+ * Used by stats.router.ts dailyPush endpoint.
+ */
+export async function upsertDailyStat(
+  userId: number,
+  date: string,
+  data: { hiddenCount: number; seenCount: number; estimatedTimeSaved: number },
+): Promise<void> {
+  const db = await getDb();
+  if (!db) return;
+  const stat = await getOrCreateDailyStat(userId, date);
+  await db
+    .update(dailyStats)
+    .set({
+      hiddenCount: data.hiddenCount,
+      seenCount: data.seenCount,
+      estimatedTimeSaved: data.estimatedTimeSaved,
+    })
+    .where(eq(dailyStats.id, stat.id));
 }

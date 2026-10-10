@@ -35,12 +35,18 @@ export async function generateDailySummaryEmail(
     subject: `Your X Filter Pro Daily Summary - ${new Date().toLocaleDateString()}`,
     html: `
       <html>
-        <body style="font-family: Arial, sans-serif; color: #333;">
-          <h2>Hey ${userName}! 👋</h2>
+        <body style="margin:0;padding:0;background:#0a0a14;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#e8e8f0;">
+    <div style="max-width:560px;margin:0 auto;padding:48px 24px;">
+      <div style="background:#14141e;border:1px solid #1e1e30;border-radius:16px;padding:36px 32px;">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+          <div style="width:32px;height:32px;background:linear-gradient(135deg,#ffd166,#f7b733);border-radius:7px;"></div>
+          <span style="font-weight:700;font-size:16px;color:#e8e8f0;">X Filter <span style="color:#ffd166">Pro</span></span>
+        </div>
+        <h2 style="font-size:20px;font-weight:800;margin:0 0 14px;color:#e8e8f0;">Hey ${userName}! 👋</h2>
           <p>Here's your daily X Filter Pro summary:</p>
           
-          <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>📊 Today's Stats</h3>
+          <div style="background:#1a1a2e;border:1px solid #2a2a44;border-radius:10px;padding:20px;margin:20px 0;">
+            <h3 style="color:#ffd166;font-size:14px;margin:0 0 12px;">📊 Today's Stats</h3>
             <ul>
               <li><strong>Tweets Hidden:</strong> ${stats.totalHidden}</li>
               <li><strong>Tweets Seen:</strong> ${stats.totalSeen}</li>
@@ -48,8 +54,8 @@ export async function generateDailySummaryEmail(
             </ul>
           </div>
 
-          <div style="background: #f5f5f5; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3>🔥 Top Accounts Hidden</h3>
+          <div style="background:#1a1a2e;border:1px solid #2a2a44;border-radius:10px;padding:20px;margin:20px 0;">
+            <h3 style="color:#ffd166;font-size:14px;margin:0 0 12px;">🔥 Top Accounts Hidden</h3>
             <ul>
               ${topAccountsList}
             </ul>
@@ -57,16 +63,16 @@ export async function generateDailySummaryEmail(
 
           <p>Keep filtering! 🚀</p>
           <p>
-            <a href="https://app.xfilterpro.com/dashboard" 
-               style="background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
+            <a href="https://xfilterpro.com/" 
+               style="display:inline-block;background:linear-gradient(135deg,#ffd166,#f7b733);color:#000;text-decoration:none;padding:14px 28px;border-radius:10px;font-weight:700;font-size:14px;">
               View Full Dashboard
             </a>
           </p>
 
           <hr style="margin-top: 40px; border: none; border-top: 1px solid #ddd;">
-          <p style="font-size: 12px; color: #999;">
-            You're receiving this email because you have email notifications enabled.
-            <a href="https://app.xfilterpro.com/settings" style="color: #007bff;">Manage preferences</a>
+          <p style="font-size:12px;color:#66668a;">
+            You're receiving this because you have email notifications enabled.
+            <a href="https://xfilterpro.com/" style="color:#6ee7f7;">Manage preferences</a>
           </p>
         </body>
       </html>
@@ -86,7 +92,7 @@ export async function generateDailySummaryEmail(
 
       Keep filtering! 🚀
 
-      View your full dashboard: https://app.xfilterpro.com/dashboard
+      View your full dashboard: https://xfilterpro.com/
     `,
   };
 }
@@ -96,73 +102,51 @@ export async function generateDailySummaryEmail(
  */
 export async function generateProUpgradeEmail(userName: string): Promise<EmailTemplate> {
   return {
-    subject: "Upgrade to X Filter Pro - Unlimited Features! 🚀",
-    html: `
-      <html>
-        <body style="font-family: Arial, sans-serif; color: #333;">
-          <h2>Hey ${userName}! 🎉</h2>
-          <p>You're using X Filter Pro and we love it! Ready to unlock unlimited features?</p>
-          
-          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; border-radius: 8px; margin: 20px 0; text-align: center;">
-            <h3>✨ Upgrade to Pro</h3>
-            <p>Get unlimited AI features, advanced analytics, and priority support</p>
-            <p style="font-size: 24px; font-weight: bold; margin: 20px 0;">
-              $9.99/month or $89.99/year
-            </p>
-            <a href="https://app.xfilterpro.com/upgrade" 
-               style="background: white; color: #667eea; padding: 12px 30px; text-decoration: none; border-radius: 4px; font-weight: bold; display: inline-block;">
-              Upgrade Now
-            </a>
-          </div>
+    subject: "Unlock Pro features — X Filter Pro ⭐",
+    html: `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0a0a14;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#e8e8f0;">
+<div style="max-width:560px;margin:0 auto;padding:48px 24px;">
+  <div style="background:#14141e;border:1px solid #1e1e30;border-radius:16px;padding:36px 32px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+      <div style="width:32px;height:32px;background:linear-gradient(135deg,#ffd166,#f7b733);border-radius:7px;"></div>
+      <span style="font-weight:700;font-size:16px;">X Filter <span style="color:#ffd166">Pro</span></span>
+    </div>
+    <h1 style="font-size:22px;font-weight:800;margin:0 0 14px;">Hey \${userName}, ready to go Pro? ⭐</h1>
+    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 20px;">You're already blocking ads and filtering tweets. Unlock the full toolkit:</p>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="padding:8px 0;color:#aaa;font-size:13px;">🤖 <strong style="color:#e8e8f0;">50 AI summaries/day</strong> (vs 5 free)</td></tr>
+      <tr><td style="padding:8px 0;color:#aaa;font-size:13px;">🔒 <strong style="color:#e8e8f0;">Hide external links</strong> — family-safe browsing</td></tr>
+      <tr><td style="padding:8px 0;color:#aaa;font-size:13px;">🖥️ <strong style="color:#e8e8f0;">Focus Mode</strong> — hide left nav &amp; sidebar</td></tr>
+      <tr><td style="padding:8px 0;color:#aaa;font-size:13px;">☁️ <strong style="color:#e8e8f0;">Cloud Sync</strong> — settings across devices</td></tr>
+    </table>
+    <div style="background:#1a1a2e;border:1px solid #2a2a44;border-radius:10px;padding:20px;margin:20px 0;text-align:center;">
+      <p style="color:#ffd166;font-size:28px;font-weight:800;margin:0 0 4px;">$2/month</p>
+      <p style="color:#66668a;font-size:13px;margin:0;">or $20/year (save 17%)</p>
+    </div>
+    <div style="text-align:center;">
+      <a href="https://xfilterpro.com/" style="display:inline-block;background:linear-gradient(135deg,#ffd166,#f7b733);color:#000;text-decoration:none;padding:14px 32px;border-radius:10px;font-weight:700;font-size:14px;">Upgrade to Pro</a>
+    </div>
+    <hr style="border:none;border-top:1px solid #1e1e30;margin:24px 0;">
+    <p style="color:#66668a;font-size:12px;margin:0;">Questions? Reply to this email or contact support@xfilterpro.com</p>
+  </div>
+  <p style="text-align:center;color:#66668a;font-size:11px;font-family:monospace;margin-top:24px;">&copy; 2026 X Filter Pro &middot; <a href="https://xfilterpro.com" style="color:#6ee7f7;">xfilterpro.com</a></p>
+</div></body></html>`,
+    text: `Hey \${userName}!
 
-          <h3>Pro Features:</h3>
-          <ul>
-            <li>✅ Unlimited tweet filtering</li>
-            <li>✅ Unlimited AI summarization</li>
-            <li>✅ Unlimited AI translation</li>
-            <li>✅ Cross-device sync (Chrome, Firefox, Opera)</li>
-            <li>✅ Advanced analytics & reports</li>
-            <li>✅ Priority support</li>
-          </ul>
+Ready to go Pro? Unlock the full toolkit:
 
-          <p>
-            <a href="https://app.xfilterpro.com/upgrade" 
-               style="background: #007bff; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-              Upgrade to Pro
-            </a>
-          </p>
+🤖 50 AI summaries/day (vs 5 free)
+🔒 Hide external links — family-safe browsing
+🖥️ Focus Mode — hide left nav & sidebar
+☁️ Cloud Sync — settings across devices
 
-          <hr style="margin-top: 40px; border: none; border-top: 1px solid #ddd;">
-          <p style="font-size: 12px; color: #999;">
-            <a href="https://app.xfilterpro.com/settings" style="color: #007bff;">Manage email preferences</a>
-          </p>
-        </body>
-      </html>
-    `,
-    text: `
-      Hey ${userName}!
+$2/month or $20/year (save 17%)
 
-      You're using X Filter Pro and we love it! Ready to unlock unlimited features?
+Upgrade: https://xfilterpro.com/
 
-      ✨ Upgrade to Pro
-      $9.99/month or $89.99/year
-
-      Pro Features:
-      ✅ Unlimited tweet filtering
-      ✅ Unlimited AI summarization
-      ✅ Unlimited AI translation
-      ✅ Cross-device sync
-      ✅ Advanced analytics
-      ✅ Priority support
-
-      Upgrade now: https://app.xfilterpro.com/upgrade
-    `,
+Questions? support@xfilterpro.com`,
   };
 }
 
-/**
- * Payment success emaili
- */
 export async function generatePaymentSuccessEmail(
   userName: string,
   planType: "monthly" | "annual"
@@ -170,80 +154,60 @@ export async function generatePaymentSuccessEmail(
   const planName = planType === "monthly" ? "Monthly" : "Annual";
   const renewalText =
     planType === "monthly"
-      ? "Your subscription will renew automatically every month."
-      : "Your subscription will renew automatically every year.";
+      ? "Your subscription renews automatically every month."
+      : "Your subscription renews automatically every year.";
 
   return {
-    subject: "Welcome to X Filter Pro! 🎉",
-    html: `
-      <html>
-        <body style="font-family: Arial, sans-serif; color: #333;">
-          <h2>Welcome to Pro, ${userName}! 🎉</h2>
-          <p>Thank you for upgrading to X Filter Pro ${planName}!</p>
-          
-          <div style="background: #d4edda; border: 1px solid #c3e6cb; padding: 20px; border-radius: 8px; margin: 20px 0;">
-            <h3 style="color: #155724;">✅ Upgrade Successful!</h3>
-            <p style="color: #155724;">
-              Your Pro features are now active. ${renewalText}
-            </p>
-          </div>
+    subject: "You're Pro now! 🎉 — X Filter Pro",
+    html: `<!DOCTYPE html><html><body style="margin:0;padding:0;background:#0a0a14;font-family:-apple-system,BlinkMacSystemFont,sans-serif;color:#e8e8f0;">
+<div style="max-width:560px;margin:0 auto;padding:48px 24px;">
+  <div style="background:#14141e;border:1px solid #1e1e30;border-radius:16px;padding:36px 32px;">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px;">
+      <div style="width:32px;height:32px;background:linear-gradient(135deg,#ffd166,#f7b733);border-radius:7px;"></div>
+      <span style="font-weight:700;font-size:16px;">X Filter <span style="color:#ffd166">Pro</span></span>
+    </div>
+    <h1 style="font-size:22px;font-weight:800;margin:0 0 14px;">Welcome to Pro, \${userName}! 🎉</h1>
+    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 16px;">Thank you for upgrading to X Filter Pro \${planName}!</p>
+    <div style="background:rgba(255,209,102,0.08);border:1px solid rgba(255,209,102,0.2);border-radius:10px;padding:16px;margin:0 0 20px;">
+      <p style="color:#ffd166;font-weight:700;margin:0 0 4px;">✅ Pro features are now active</p>
+      <p style="color:#aaa;font-size:13px;margin:0;">\${renewalText}</p>
+    </div>
+    <p style="color:#ffd166;font-size:13px;font-weight:700;margin:0 0 12px;">What's unlocked:</p>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr><td style="padding:6px 0;color:#aaa;font-size:13px;">🤖 <strong style="color:#e8e8f0;">50 AI summaries/day</strong></td></tr>
+      <tr><td style="padding:6px 0;color:#aaa;font-size:13px;">🔒 <strong style="color:#e8e8f0;">Hide external links</strong></td></tr>
+      <tr><td style="padding:6px 0;color:#aaa;font-size:13px;">🖥️ <strong style="color:#e8e8f0;">Focus Mode</strong> (hide left nav &amp; sidebar)</td></tr>
+      <tr><td style="padding:6px 0;color:#aaa;font-size:13px;">☁️ <strong style="color:#e8e8f0;">Cloud Sync</strong></td></tr>
+      <tr><td style="padding:6px 0;color:#aaa;font-size:13px;">📱 <strong style="color:#e8e8f0;">2 devices</strong> simultaneously</td></tr>
+    </table>
+    <div style="text-align:center;margin-top:20px;">
+      <a href="https://xfilterpro.com/" style="display:inline-block;background:linear-gradient(135deg,#ffd166,#f7b733);color:#000;text-decoration:none;padding:14px 32px;border-radius:10px;font-weight:700;font-size:14px;">Start using Pro</a>
+    </div>
+    <hr style="border:none;border-top:1px solid #1e1e30;margin:24px 0;">
+    <p style="color:#66668a;font-size:12px;margin:0;">Questions? Reply to this email or contact support@xfilterpro.com</p>
+  </div>
+  <p style="text-align:center;color:#66668a;font-size:11px;font-family:monospace;margin-top:24px;">&copy; 2026 X Filter Pro &middot; <a href="https://xfilterpro.com" style="color:#6ee7f7;">xfilterpro.com</a></p>
+</div></body></html>`,
+    text: `Welcome to Pro, \${userName}! 🎉
 
-          <h3>You now have access to:</h3>
-          <ul>
-            <li>✅ Unlimited tweet filtering</li>
-            <li>✅ Unlimited AI summarization</li>
-            <li>✅ Unlimited AI translation</li>
-            <li>✅ Cross-device sync</li>
-            <li>✅ Advanced analytics</li>
-            <li>✅ Priority support</li>
-          </ul>
+Thank you for upgrading to X Filter Pro \${planName}!
 
-          <p>
-            <a href="https://app.xfilterpro.com/dashboard" 
-               style="background: #28a745; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px;">
-              Start Using Pro Features
-            </a>
-          </p>
+✅ Pro features are now active
+\${renewalText}
 
-          <h3>Need Help?</h3>
-          <p>
-            Check out our <a href="https://docs.xfilterpro.com" style="color: #007bff;">documentation</a> or 
-            <a href="https://support.xfilterpro.com" style="color: #007bff;">contact support</a>.
-          </p>
+What's unlocked:
+🤖 50 AI summaries/day
+🔒 Hide external links
+🖥️ Focus Mode
+☁️ Cloud Sync
+📱 2 devices simultaneously
 
-          <hr style="margin-top: 40px; border: none; border-top: 1px solid #ddd;">
-          <p style="font-size: 12px; color: #999;">
-            <a href="https://app.xfilterpro.com/settings" style="color: #007bff;">Manage subscription</a>
-          </p>
-        </body>
-      </html>
-    `,
-    text: `
-      Welcome to Pro, ${userName}!
+Start using Pro: https://xfilterpro.com/
 
-      Thank you for upgrading to X Filter Pro ${planName}!
-
-      ✅ Upgrade Successful!
-      Your Pro features are now active. ${renewalText}
-
-      You now have access to:
-      ✅ Unlimited tweet filtering
-      ✅ Unlimited AI summarization
-      ✅ Unlimited AI translation
-      ✅ Cross-device sync
-      ✅ Advanced analytics
-      ✅ Priority support
-
-      Start using Pro features: https://app.xfilterpro.com/dashboard
-
-      Need help? Contact support: https://support.xfilterpro.com
-    `,
+Questions? support@xfilterpro.com`,
   };
 }
 
-/**
- * Zaman kazancını insan tarafından okunabilir formata dönüştür
- */
 function formatTimeSaved(seconds: number): string {
   if (seconds < 60) {
     return `${seconds}s`;

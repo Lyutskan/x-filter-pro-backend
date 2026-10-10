@@ -87,6 +87,51 @@ const MIGRATIONS: Migration[] = [
     ],
   },
   // Future migrations: append here. Never edit existing entries.
+  {
+    name: "0005_user_sync_state",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS userSyncState (
+        userId INT NOT NULL PRIMARY KEY,
+        seenCountTotal INT NOT NULL DEFAULT 0,
+        mutedAccounts TEXT,
+        filterRules TEXT,
+        toggleSettings TEXT,
+        lastSyncedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT userSyncState_userId_fk FOREIGN KEY (userId) REFERENCES users(id) ON DELETE CASCADE
+      )`,
+    ],
+  },
+  {
+    name: "0006_stats_tables",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS anonymousStats (
+        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        ipHash VARCHAR(64) NOT NULL,
+        countryCode VARCHAR(2),
+        date VARCHAR(10) NOT NULL,
+        hiddenCount INT NOT NULL DEFAULT 0,
+        linkCount INT NOT NULL DEFAULT 0,
+        createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX anonymousStats_ipHash_date_idx (ipHash, date),
+        INDEX anonymousStats_country_date_idx (countryCode, date)
+      )`,
+      `CREATE TABLE IF NOT EXISTS recentInstalls (
+        id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+        city VARCHAR(64),
+        countryCode VARCHAR(2),
+        installedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        INDEX recentInstalls_installedAt_idx (installedAt)
+      )`,
+      `CREATE TABLE IF NOT EXISTS publicMetricsCache (
+        metricKey VARCHAR(64) NOT NULL PRIMARY KEY,
+        metricValue BIGINT NOT NULL,
+        computedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`,
+    ],
+  },
 ];
 
 /**

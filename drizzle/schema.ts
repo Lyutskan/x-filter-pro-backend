@@ -1,4 +1,4 @@
-import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean, json, decimal, index } from "drizzle-orm/mysql-core";
+import { int, mysqlEnum, mysqlTable, text, timestamp, varchar, boolean, json, decimal, index, bigint} from "drizzle-orm/mysql-core";
 
 /**
  * Core user table backing auth flow.
@@ -297,3 +297,79 @@ export const deviceSessions = mysqlTable(
 
 export type DeviceSession = typeof deviceSessions.$inferSelect;
 export type InsertDeviceSession = typeof deviceSessions.$inferInsert;
+
+/**
+ * Cloud Sync — Per-user state snapshot (Pro feature)
+ * Stores mute list, filter rules, toggle settings, counters.
+ * One row per user. Updated atomically via INSERT ... ON DUPLICATE KEY UPDATE.
+ */
+export const userSyncState = mysqlTable("userSyncState", {
+  userId: int("userId").primaryKey().references(() => users.id, { onDelete: "cascade" }),
+  seenCountTotal: int("seenCountTotal").default(0).notNull(),
+  mutedAccounts: text("mutedAccounts"),
+  filterRules: text("filterRules"),
+  toggleSettings: text("toggleSettings"),
+  lastSyncedAt: timestamp("lastSyncedAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type UserSyncState = typeof userSyncState.$inferSelect;
+export type InsertUserSyncState = typeof userSyncState.$inferInsert;
+
+/**
+ * Anonymous aggregate stats (opt-in via extension setting)
+ * Stores daily count per IP-hash. Hash uses daily-rotating salt → tracking impossible.
+ * Used to compute public counters: "X ads blocked today across all users"
+ */
+export const anonymousStats = mysqlTable(
+  "anonymousStats",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    ipHash: varchar("ipHash", { length: 64 }).notNull(),
+    countryCode: varchar("countryCode", { length: 2 }),
+    date: varchar("date", { length: 10 }).notNull(),
+    hiddenCount: int("hiddenCount").default(0).notNull(),
+    linkCount: int("linkCount").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    ipHashDateIdx: index("anonymousStats_ipHash_date_idx").on(table.ipHash, table.date),
+    countryDateIdx: index("anonymousStats_country_date_idx").on(table.countryCode, table.date),
+  })
+);
+
+export type AnonymousStat = typeof anonymousStats.$inferSelect;
+export type InsertAnonymousStat = typeof anonymousStats.$inferInsert;
+
+/**
+ * Recent installs ticker — city-only social proof.
+ * No userId/IP — pure aggregate marketing data.
+ */
+export const recentInstalls = mysqlTable(
+  "recentInstalls",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    city: varchar("city", { length: 64 }),
+    countryCode: varchar("countryCode", { length: 2 }),
+    installedAt: timestamp("installedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    installedAtIdx: index("recentInstalls_installedAt_idx").on(table.installedAt),
+  })
+);
+
+export type RecentInstall = typeof recentInstalls.$inferSelect;
+
+/**
+ * Pre-computed aggregate metrics cache.
+ * (Reserved for future Redis-style cross-instance cache. Currently in-memory only.)
+ */
+export const publicMetricsCache = mysqlTable("publicMetricsCache", {
+  metricKey: varchar("metricKey", { length: 64 }).primaryKey(),
+  metricValue: bigint("metricValue", { mode: "number" }).notNull(),
+  computedAt: timestamp("computedAt").defaultNow().notNull(),
+});
+
+export type PublicMetric = typeof publicMetricsCache.$inferSelect;

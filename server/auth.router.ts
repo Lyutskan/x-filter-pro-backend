@@ -29,6 +29,7 @@ import {
 } from "./_core/auth";
 import {
   createAuthSession,
+  enforceDeviceLimit,
   createEmailVerificationToken,
   createPasswordResetToken,
   createUserWithPassword,
@@ -102,6 +103,8 @@ async function buildAuthResponse(
   const deviceInfo = parseDeviceInfo(req?.headers["user-agent"] as string | undefined);
   const ipAddress = extractClientIp(req);
 
+  // Enforce device limit BEFORE creating the new session
+  await enforceDeviceLimit(userId, isPro);
   await createAuthSession(sessionId, userId, deviceInfo, ipAddress);
 
   const token = await signJwt({ sub: String(userId), email, sid: sessionId });
@@ -566,15 +569,35 @@ function buildVerificationEmailHtml(verifyUrl: string, name: string | null): str
       <div style="width:32px;height:32px;background:linear-gradient(135deg,#ffd166,#f7b733);border-radius:7px;"></div>
       <span style="font-weight:700;font-size:16px;">X Filter <span style="color:#ffd166">Pro</span></span>
     </div>
-    <h1 style="font-size:22px;font-weight:800;margin:0 0 14px;line-height:1.3;">Welcome — verify your email</h1>
-    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 24px;">${greeting}</p>
-    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 24px;">Thanks for signing up to X Filter Pro! Click the button below to confirm your email and unlock all account features. This link expires in 24 hours.</p>
-    <a href="${verifyUrl}" style="display:inline-block;background:linear-gradient(135deg,#ffd166,#f7b733);color:#000;text-decoration:none;padding:14px 32px;border-radius:10px;font-weight:700;font-size:14px;">Verify email</a>
-    <p style="color:#66668a;font-size:12px;line-height:1.6;margin:28px 0 0;font-family:monospace;">Or copy this link:<br><a href="${verifyUrl}" style="color:#6ee7f7;word-break:break-all;">${verifyUrl}</a></p>
-    <hr style="border:none;border-top:1px solid #1e1e30;margin:32px 0;">
+    <h1 style="font-size:22px;font-weight:800;margin:0 0 14px;line-height:1.3;">Welcome to X Filter Pro!</h1>
+    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 12px;">${greeting}</p>
+    <p style="color:#aaa;font-size:14px;line-height:1.6;margin:0 0 24px;">Thanks for joining! Verify your email to unlock all features. This link expires in 24 hours.</p>
+    <a href="${verifyUrl}" style="display:inline-block;background:linear-gradient(135deg,#ffd166,#f7b733);color:#000;text-decoration:none;padding:14px 32px;border-radius:10px;font-weight:700;font-size:14px;">Verify my email</a>
+
+    <hr style="border:none;border-top:1px solid #1e1e30;margin:28px 0;">
+    <p style="font-size:13px;font-weight:700;color:#ffd166;margin:0 0 12px;">Here's what you can do right away:</p>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <td style="padding:8px 0;color:#aaa;font-size:13px;">🚫 <strong style="color:#e8e8f0;">Block all ads</strong> — hide Promoted tweets instantly</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 0;color:#aaa;font-size:13px;">🔇 <strong style="color:#e8e8f0;">Mute keywords</strong> — filter out topics you don't want to see</td>
+      </tr>
+      <tr>
+        <td style="padding:8px 0;color:#aaa;font-size:13px;">🤖 <strong style="color:#e8e8f0;">AI summaries</strong> — get quick summaries of long threads (5/day free)</td>
+      </tr>
+    </table>
+
+    <div style="background:#1a1a2e;border:1px solid #2a2a44;border-radius:10px;padding:16px;margin-top:20px;">
+      <p style="color:#ffd166;font-size:12px;font-weight:700;margin:0 0 4px;">⭐ Want more?</p>
+      <p style="color:#aaa;font-size:12px;margin:0;">Upgrade to <strong style="color:#e8e8f0;">Pro</strong> for Cloud Sync, 50 AI/day, Focus Mode, and family-safe link blocking. Starting at $2/month.</p>
+    </div>
+
+    <p style="color:#66668a;font-size:12px;line-height:1.6;margin:24px 0 0;font-family:monospace;">Or copy this link:<br><a href="${verifyUrl}" style="color:#6ee7f7;word-break:break-all;">${verifyUrl}</a></p>
+    <hr style="border:none;border-top:1px solid #1e1e30;margin:24px 0;">
     <p style="color:#66668a;font-size:12px;line-height:1.6;margin:0;">If you didn't sign up for X Filter Pro, you can safely ignore this email.</p>
   </div>
-  <p style="text-align:center;color:#66668a;font-size:11px;font-family:monospace;margin-top:24px;">© 2026 X Filter Pro · support@xfilterpro.com</p>
+  <p style="text-align:center;color:#66668a;font-size:11px;font-family:monospace;margin-top:24px;">© 2026 X Filter Pro · <a href="https://xfilterpro.com" style="color:#6ee7f7;">xfilterpro.com</a> · support@xfilterpro.com</p>
 </div>
 </body></html>`;
 }

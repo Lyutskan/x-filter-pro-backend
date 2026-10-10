@@ -15,6 +15,13 @@
       "when": 1773175421552,
       "tag": "0001_remarkable_yellowjacket",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "5",
+      "when": 1778533652101,
+      "tag": "0002_majestic_ulik",
+      "breakpoints": true
     }
   ]
 }
