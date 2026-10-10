@@ -264,17 +264,26 @@ function formatTimeSaved(seconds: number): string {
 }
 
 /**
- * Email gönderme - SendGrid entegrasyonu ile
+ * Email gönderme.
+ * Öncelik: RESEND_API_KEY → Resend, yoksa SENDGRID_API_KEY → SendGrid, ikisi de yoksa mock.
  */
 export async function sendEmail(
   to: string,
   template: EmailTemplate
 ): Promise<{ success: boolean; messageId?: string }> {
-  // SendGrid kullanılabiliyorsa, SendGrid'i kullan
+  if (process.env.RESEND_API_KEY) {
+    try {
+      const { sendEmailViaResend } = await import("./resend.service");
+      return await sendEmailViaResend(to, template);
+    } catch (error) {
+      console.error("[Email] Failed to use Resend, trying next provider", error);
+    }
+  }
+
   if (process.env.SENDGRID_API_KEY) {
     try {
       const { sendEmailViaSendGrid } = await import("./sendgrid.service");
-      return sendEmailViaSendGrid(to, template);
+      return await sendEmailViaSendGrid(to, template);
     } catch (error) {
       console.error("[Email] Failed to use SendGrid, falling back to mock", error);
     }
